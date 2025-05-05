@@ -70,7 +70,12 @@ where
                 }
                 OutputToken::Setup(lines) if self.verbose => {
                     self.output
-                        .write_all(format!("🔧 Setup: {}\n", lines[0]).as_bytes())?;
+                        .write_all(format!("🔧 {}\n", lines.join("\n")).as_bytes())?;
+                }
+                OutputToken::View(lines) if self.verbose => {
+                    for line in lines {
+                        self.output.write_all(format!("🔍 {}\n", line).as_bytes())?;
+                    }
                 }
                 _ => (),
             }

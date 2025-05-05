@@ -5,6 +5,7 @@ use soft65c02_lib::{execute_step, AddressableIO, LogLine, Memory, Registers};
 use crate::{
     until_condition::{Assignment, BooleanExpression},
     symbols::SymbolTable,
+    disassembler::Disassembler,
     AppResult,
 };
 
@@ -22,6 +23,7 @@ pub enum OutputToken {
         loglines: Vec<LogLine>,
     },
     Setup(Vec<String>),
+    View(Vec<String>),
 }
 
 pub trait Command {
@@ -36,6 +38,7 @@ pub enum CliCommand {
     None,
     Registers(RegisterCommand),
     Run(RunCommand),
+    Disassemble { start: usize, end: usize },
 }
 
 impl Command for CliCommand {
@@ -49,6 +52,11 @@ impl Command for CliCommand {
             Self::None => Ok(OutputToken::None),
             Self::Registers(command) => command.execute(registers, memory, symbols),
             Self::Run(command) => command.execute(registers, memory, symbols),
+            Self::Disassemble { start, end } => {
+                let disassembler = Disassembler::new(memory, symbols);
+                let output = disassembler.disassemble_range(*start, *end)?;
+                Ok(OutputToken::View(output))
+            }
         }
     }
 }
@@ -608,5 +616,89 @@ mod memory_command_tests {
             &[0x34, 0x12],
             memory.read(0x02E0, 2).unwrap().as_slice()
         );
+    }
+}
+
+#[cfg(test)]
+mod disassemble_command_tests {
+    use super::*;
+
+    #[test]
+    fn test_basic_disassemble() {
+        let command = CliCommand::Disassemble { 
+            start: 0x1000, 
+            end: 0x1000  // Length of 1 byte
+        };
+        let mut registers = Registers::new_initialized(0x0000);
+        let mut memory = Memory::new_with_ram();
+        
+        // Write a simple instruction (LDA #$42)
+        memory.write(0x1000, &[0xa9, 0x42]).unwrap();
+        
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        
+        // Check that we got a View token with the expected disassembly
+        match token {
+            OutputToken::View(lines) => {
+                assert!(lines.len() > 2); // At least header, one instruction, and footer
+                assert!(lines[0].contains("Start of disassembly"));
+                assert!(lines[1].contains("LDA  #$42")); // Check the instruction
+                assert!(lines[2].contains("End of disassembly"));
+            }
+            _ => panic!("Expected OutputToken::View"),
+        }
+    }
+
+    #[test]
+    fn test_disassemble_with_symbols() {
+        let command = CliCommand::Disassemble { 
+            start: 0x1000, 
+            end: 0x1001  // Length of 2 bytes
+        };
+        let mut registers = Registers::new_initialized(0x0000);
+        let mut memory = Memory::new_with_ram();
+        let mut symbols = Some(SymbolTable::new());
+        
+        // Add a test symbol
+        if let Some(symtab) = &mut symbols {
+            symtab.add_symbol(0x1000, "start".to_string());
+        }
+        
+        // Write a simple instruction (LDA #$42)
+        memory.write(0x1000, &[0xa9, 0x42]).unwrap();
+        
+        let token = command.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        
+        // Check that we got a View token with the symbol in the output
+        match token {
+            OutputToken::View(lines) => {
+                assert!(lines.len() > 2);
+                assert!(lines[1].contains("start")); // Symbol should appear
+                assert!(lines[2].contains("LDA  #$42")); // Check the instruction
+            }
+            _ => panic!("Expected OutputToken::View"),
+        }
+    }
+
+    #[test]
+    fn test_disassemble_empty_range() {
+        let command = CliCommand::Disassemble { 
+            start: 0x1000, 
+            end: 0x0FFF  // Invalid range (end < start)
+        };
+        let mut registers = Registers::new_initialized(0x0000);
+        let mut memory = Memory::new_with_ram();
+        
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        
+        // Should still get a View token with header and footer
+        match token {
+            OutputToken::View(lines) => {
+                assert!(lines.len() >= 2); // At least header and footer
+                assert!(lines[0].contains("Start of disassembly"));
+                assert!(lines[1].contains("End of disassembly"));
+            }
+            _ => panic!("Expected OutputToken::View"),
+        }
     }
 }

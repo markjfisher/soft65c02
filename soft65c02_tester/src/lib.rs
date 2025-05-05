@@ -6,11 +6,13 @@ mod until_condition;
 pub mod atari_binary;
 pub mod apple_single;
 pub mod symbols;
+pub mod disassembler;
 
 pub use commands::*;
 pub use displayer::*;
 pub use executor::*;
 pub use pest_parser::CliCommandParser;
 pub use symbols::SymbolTable;
+pub use disassembler::Disassembler;
 
 pub type AppResult<T> = anyhow::Result<T>;

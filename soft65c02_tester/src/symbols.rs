@@ -91,6 +91,14 @@ impl SymbolTable {
             println!("${:04X}: {}", addr, symbols.join(", "));
         }
     }
+
+    /// Get all symbols associated with a given address
+    pub fn get_symbols_for_address(&self, addr: u16) -> Vec<String> {
+        self.symbols
+            .get(&addr)
+            .map(|symbols| symbols.clone())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]
