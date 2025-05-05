@@ -81,8 +81,7 @@ bytes = @{ ASCII_HEX_DIGIT{1,2} ~ ("," ~ ASCII_HEX_DIGIT{1,2})* }
 size_parameter = { ASCII_DIGIT+ }
 
 standard_operator = { ">=" | "<=" | "!=" | "=" | ">" | "<" }
-filename = { "\"" ~ filechar+ ~ "\"" }
-filechar = _{ ASCII_ALPHANUMERIC | "." | "_" | "/" }
+filename = { "\"" ~ (ASCII_ALPHANUMERIC | "." | "_" | "/" | "-" | "$" | "{" | "}" | "(" | ")")+ ~ "\"" }
 description = { ((!"$$") ~ ANY)* }
 
 symbols_instruction = { ^"symbols" ~ symbol_action }
