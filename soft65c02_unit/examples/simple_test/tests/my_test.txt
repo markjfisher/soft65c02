@@ -1,0 +1,12 @@
+marker $$testing my_test function$$
+
+memory load atari "${BINARY_PATH}"
+symbols load "${SYMBOLS_PATH}"
+
+disassemble $_main 0x8
+
+// Run the test
+run $_main
+run
+assert A=0x01     $$A register should be set to 1$$ 
+run until 
