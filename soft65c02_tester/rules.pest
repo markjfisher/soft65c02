@@ -7,7 +7,8 @@ instruction = { registers_instruction |
     run_instruction |
     assert_instruction |
     marker |
-    symbols_instruction }
+    symbols_instruction |
+    disassemble_instruction }
 
 marker = {^"marker" ~ "$$" ~ description ~ "$$" }
 
@@ -25,7 +26,7 @@ assignment_cycle = _{ register_cycle ~ "=" ~ value16 }
 memory_instruction = { ^"memory" ~ memory_action }
 memory_action = _{ memory_load | memory_write | memory_flush }
 memory_flush = { ^"flush" }
-memory_load = { ^"load" ~ (memory_address | target_name)  ~ filename }
+memory_load = { ^"load" ~ (memory_address | target_name) ~ filename }
 memory_write = { ^"write" ~ memory_address ~ (^"0x(" ~ bytes ~ ")" | string_literal) }
 
 target_name = { "atari" | "apple" }
@@ -53,8 +54,8 @@ NOT_OP = { ^"NOT" }
 
 boolean = { ^"true" | ^"false" }
 comparison = { comparison16 | comparison8 | comparison_cycle }
-comparison16 = _{ location16 ~ standard_operator ~ value16 }
-comparison8 = _{ location8 ~ standard_operator ~ value8 }
+comparison16 = _{ location16 ~ standard_operator ~ (value16 | symbol_reference) }
+comparison8 = _{ location8 ~ standard_operator ~ (value8 | symbol_reference) }
 comparison_cycle = _{ location_cycle ~ standard_operator ~ value16 }
 memory_sequence = { memory_address ~ "~" ~ (bytes_list | string_literal) }
 string_literal = { "\"" ~ string_char* ~ "\"" }
@@ -66,6 +67,7 @@ location_cycle = _{ register_cycle }
 
 memory_address = { hex_address | symbol_reference }
 hex_address = @{ "#0x" ~ ASCII_HEX_DIGIT{1,4} }
+hex_length = @{ "0x" ~ ASCII_HEX_DIGIT{1,4} }
 symbol_reference = { "$" ~ symbol_name }
 symbol_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
@@ -88,3 +90,5 @@ symbol_action = _{ symbol_load | symbol_add }
 symbol_load = { "load" ~ filename }
 symbol_add = { "add" ~ symbol_name ~ "=" ~ symbol_add_value }
 symbol_add_value = { value16 | value8 | symbol_reference }
+
+disassemble_instruction = { ^"disassemble" ~ memory_address ~ hex_length }

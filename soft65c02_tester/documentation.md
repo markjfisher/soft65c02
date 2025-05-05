@@ -130,7 +130,7 @@ symbols add RUNADL=0x02e0
 symbols add RUNADH=0x02e1
 ```
 
-#### Using symobols with registers
+#### Using symbols with registers
 
 Symbol values also work with setting registers, they must be a single byte for registers, otherwise the command will fail.
 
@@ -143,6 +143,46 @@ registers set A=$SMALL
 
 // this will fail
 registers set A=$LARGE
+```
+
+### disassemble memory_start length
+
+To output disassembly of memory location, use the command `disassemble memory_start length` where length is a hex value (1-4 digits) specifying how many bytes to disassemble.
+
+Symbols can be used for the start address.
+
+The soft65c02_tester enhances the base disassembler in the library by adding symbol references, and constructing both branch and standard labels, to help reading the disassembly.
+
+Where symbols match the disassembly output addresses, they will be output as a comment, with all matching symbols displayed.
+
+Examples:
+```
+disassemble $_main 0x1D
+```
+
+The output contains labels and names where they match:
+```
+🔍 ---- Start of disassembly ----
+🔍 start, main:
+🔍 #0x1000: (18)          CLC  
+🔍 #0x1001: (a9 10)       LDA  #$10
+🔍 #0x1003: (6d 00 20)    ADC  $2000         ; → mem_lo
+🔍 #0x1006: (8d 00 20)    STA  $2000         ; → mem_lo
+🔍 #0x1009: (90 0d)       BCC  branch_1
+🔍 #0x100B: (ee 01 20)    INC  $2001         ; → mem_hi
+🔍 #0x100E: (d0 05)       BNE  branch_2
+🔍 #0x1010: (f0 ee)       BEQ  start         ; → start, main
+🔍 #0x1012: (4c 1b 10)    JMP  $101B         ; → end
+🔍 branch_2:
+🔍 #0x1015: (a9 00)       LDA  #$00
+🔍 #0x1017: (60)          RTS  
+🔍 branch_1:
+🔍 #0x1018: (a9 ff)       LDA  #$ff
+🔍 #0x101A: (60)          RTS  
+🔍 end:
+🔍 #0x101B: (a9 42)       LDA  #$42
+🔍 #0x101D: (60)          RTS  
+🔍 ----- End of disassembly -----
 ```
 
 ### run
@@ -358,13 +398,17 @@ $ cd soft65c02_tester
 $ cargo build
 $ ../target/debug/soft65c02_tester -v -i tests/test_atari.txt
 📄 loading atari binaries
-🔧 Setup: 3 segments loaded.
-🔧 Setup: 2 symbols loaded
-🔧 Setup: Symbol RUNADL added with value 0x02E0
-🔧 Setup: Symbol RUNADH added with value 0x02E1
-🔧 Setup: Symbol INITADL added with value 0x02E2
-🔧 Setup: Symbol INITADH added with value 0x02E3
-🔧 Setup: registers flushed
+🔧 3 segments loaded.
+🔧 2 symbols loaded
+🔧 Symbol RUNADL added with value 0x02E0
+🔧 Symbol RUNADH added with value 0x02E1
+🔧 Symbol INITADL added with value 0x02E2
+🔧 Symbol INITADH added with value 0x02E3
+🔧 Symbol COLOR1 added with value 0x02C5
+🔧 Symbol COLOR2 added with value 0x02C6
+🔧 Symbol COLOR3 added with value 0x02C7
+🔧 Symbol COLOR4 added with value 0x02C8
+🔧 registers flushed
 ⚡ 01 → RUNADR = 0x2000 low byte ✅
 ⚡ 02 → RUNADR = 0x2000 high byte ✅
 ⚡ 03 → INITADR = 0x2006 low byte ✅
@@ -373,12 +417,23 @@ $ ../target/debug/soft65c02_tester -v -i tests/test_atari.txt
 ⚡ 06 → symbol main is loaded from table ✅
 ⚡ 07 → 0x2000 starts with correct byte sequence ✅
 ⚡ 08 → main starts with correct byte sequence ✅
+🔍 ---- Start of disassembly ----
+🔍 main:
+🔍 #0x2000: (a9 42)       LDA  #$42
+🔍 #0x2002: (8d c6 02)    STA  COLOR2
+🔍 #0x2005: (60)          RTS  
+🔍 cust_init:
+🔍 #0x2006: (a2 00)       LDX  #$00
+🔍 #0x2008: (8e c8 02)    STX  COLOR4
+🔍 #0x200B: (60)          RTS  
+🔍 #0x200C: (00)          BRK  
+🔍 ----- End of disassembly -----
 🚀 #0x2000: (a9 42)       LDA  #$42     (#0x2001)  [A=0x42][S=nv-Bdizc][2]
 ⚡ 09 → A is $42 ✅
 ⚡ 10 → Target location is 0 before changed ✅
 🚀 #0x2002: (8d c6 02)    STA  $02C6    (#0x02C6)  (0x42)[4]
 ⚡ 11 → Changes to value in A ✅
-🚀 #0x2005: (60)          RTS                      [CP=0x0001][SP=0x01][S=nv-Bdizc][6]
+🚀 #0x2005: (60)          RTS                      [CP=0x0001][6]
 ⚡ 12 → Exit function ✅
 🔧 Setup: register X set to 0xff
 🔧 Setup: 1 byte written

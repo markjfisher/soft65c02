@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::env;
 
 use anyhow::anyhow;
 use pest::{
@@ -174,6 +175,18 @@ impl<'a> ParserContext<'a> {
             Rule::register8 | Rule::register16 | Rule::register_cycle => self.parse_source_register(&rh_node),
             Rule::memory_address => self.parse_source_memory(&rh_node)?,
             Rule::value8 | Rule::value16 => self.parse_source_value(&rh_node)?,
+            Rule::symbol_reference => {
+                let symbol_name = &rh_node.as_str()[1..]; // Skip the "$" prefix
+                if let Some(symbols) = &self.symbols {
+                    if let Some(addr) = symbols.get_address(symbol_name) {
+                        Source::Value(addr as usize)
+                    } else {
+                        return Err(anyhow!("Symbol '{}' not found", symbol_name));
+                    }
+                } else {
+                    return Err(anyhow!("Symbol table not available for resolving '{}'", symbol_name));
+                }
+            },
             v => panic!("unexpected node '{:?}' in comparison", v),
         };
 
@@ -356,22 +369,64 @@ impl<'a> MemoryCommandParser<'a> {
         }
     }
 
+    fn expand_env_vars(path: &str) -> String {
+        let mut result = path.to_string();
+        
+        // Handle ${VAR} style
+        while let Some(start) = result.find("${") {
+            if let Some(end) = result[start..].find('}') {
+                let var_name = &result[start + 2..start + end];
+                let var_value = env::var(var_name).unwrap_or_else(|_| String::new());
+                result.replace_range(start..start + end + 1, &var_value);
+            } else {
+                break;
+            }
+        }
+        
+        // Handle $VAR style
+        while let Some(start) = result.find('$') {
+            if start + 1 >= result.len() {
+                break;
+            }
+            
+            // Find the end of the variable name
+            let mut end = start + 1;
+            while end < result.len() && (result[end..end + 1].chars().next().unwrap().is_alphanumeric() || result[end..end + 1].chars().next().unwrap() == '_') {
+                end += 1;
+            }
+            
+            if end > start + 1 {
+                let var_name = &result[start + 1..end];
+                let var_value = env::var(var_name).unwrap_or_else(|_| String::new());
+                result.replace_range(start..end, &var_value);
+            } else {
+                break;
+            }
+        }
+        
+        result
+    }
+
     fn handle_address_load(&self, address_pair: Pair<'_, Rule>, filename_pair: Option<Pair<'_, Rule>>) -> AppResult<MemoryCommand> {
+        println!("DEBUG handle_address_load:");
         let address = self.context.parse_memory(&address_pair)?;
         let filename = filename_pair
             .expect("there shall be a filename argument to memory load")
             .as_str();
-        let filepath = PathBuf::from(&filename[1..filename.len() - 1]);
+        let stripped = &filename[1..filename.len() - 1];
+        let expanded = Self::expand_env_vars(stripped);
+        let filepath = PathBuf::from(expanded);
 
         Ok(MemoryCommand::Load { address, filepath })
     }
 
     fn handle_target_load(&self, target_pair: Pair<'_, Rule>, filename_pair: Option<Pair<'_, Rule>>) -> AppResult<MemoryCommand> {
         let target = target_pair.as_str();
-        let filename = filename_pair
-            .expect("there shall be a filename argument to memory load")
-            .as_str();
-        let filepath = PathBuf::from(&filename[1..filename.len() - 1]);
+        let filename_pair = filename_pair.expect("there shall be a filename argument to memory load");
+        let filename = filename_pair.as_str();
+        let stripped = &filename[1..filename.len() - 1];
+        let expanded = Self::expand_env_vars(stripped);
+        let filepath = PathBuf::from(expanded);
 
         let command = match target {
             "atari" => {
@@ -396,7 +451,9 @@ impl<'a> MemoryCommandParser<'a> {
             .next()
             .expect("there shall be a filename argument to symbols load")
             .as_str();
-        let filepath = PathBuf::from(&filename[1..filename.len() - 1]);
+        let stripped = &filename[1..filename.len() - 1];
+        let expanded = Self::expand_env_vars(stripped);
+        let filepath = PathBuf::from(expanded);
         
         let mut symbols = SymbolTable::new();
         symbols.load_vice_labels(&filepath)?;
@@ -642,6 +699,61 @@ mod memory_command_parser_tests {
             matches!(command, MemoryCommand::Write { address, bytes } 
                 if address == 0x1234 && bytes == b"\"hello\\".to_vec())
         );
+    }
+
+    #[test]
+    fn test_memory_load_with_hyphenated_path() {
+        
+        // Test parsing of memory load with target and hyphenated path
+        let input = "memory load atari \"path/with-hyphen/test.bin\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        
+        // Just verify the parsing succeeds and produces the expected command type and path
+        let pair = pairs.into_iter().next().unwrap();
+        assert!(matches!(pair.as_rule(), Rule::memory_load));
+        let mut inner = pair.into_inner();
+        let target = inner.next().unwrap();
+        assert_eq!(target.as_str(), "atari");
+        let filename = inner.next().unwrap();
+        assert_eq!(filename.as_str(), "\"path/with-hyphen/test.bin\"");
+
+        // Test parsing of memory load with address and hyphenated path
+        let input = "memory load #0x1234 \"another-path/test.bin\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        
+        // Verify address load parsing
+        let pair = pairs.into_iter().next().unwrap();
+        assert!(matches!(pair.as_rule(), Rule::memory_load));
+        let mut inner = pair.into_inner();
+        let addr = inner.next().unwrap();
+        assert!(matches!(addr.as_rule(), Rule::memory_address));
+        let filename = inner.next().unwrap();
+        assert_eq!(filename.as_str(), "\"another-path/test.bin\"");
+
+        // Test parsing with environment variables in path
+        let input = "memory load #0x1234 \"${BUILD_DIR}/test-file.bin\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        
+        // Verify environment variable path parsing
+        let pair = pairs.into_iter().next().unwrap();
+        assert!(matches!(pair.as_rule(), Rule::memory_load));
+        let mut inner = pair.into_inner();
+        let addr = inner.next().unwrap();
+        assert!(matches!(addr.as_rule(), Rule::memory_address));
+        let filename = inner.next().unwrap();
+        assert_eq!(filename.as_str(), "\"${BUILD_DIR}/test-file.bin\"");
     }
 }
 
@@ -1774,9 +1886,24 @@ impl<'a> CliCommandParser<'a> {
             Rule::symbols_instruction => {
                 CliCommand::Memory(MemoryCommandParser::from_pairs(pair.into_inner(), &self.context)?)
             }
+            Rule::disassemble_instruction => {
+                let mut pairs = pair.into_inner();
+                let start = self.context.parse_memory(&pairs.next().unwrap())?;
+                let length_node = pairs.next().unwrap();
+                let length_str = &length_node.as_str()[2..]; // Skip the "0x" prefix
+                let length = usize::from_str_radix(length_str, 16)
+                    .map_err(|e| anyhow::anyhow!("Invalid hex length {}: {}", length_str, e))?;
+                if length == 0 {
+                    return Err(anyhow::anyhow!("Length must be greater than 0"));
+                }
+                CliCommand::Disassemble { 
+                    start, 
+                    end: start + length - 1 
+                }
+            }
             _ => {
                 panic!(
-                    "'{}' was not expected here: 'register|memory|run|assert|reset|symbols instruction'.",
+                    "'{}' was not expected here: 'register|memory|run|assert|reset|symbols|disassemble instruction'.",
                     pair.as_str()
                 );
             }
@@ -1903,6 +2030,51 @@ mod cli_command_parser_test {
             CliCommand::Memory(MemoryCommand::AddSymbol { name, value })
             if name == "foo" && value == 0x1234
         ));
+    }
+
+    #[test]
+    fn test_disassemble_parser() {
+        // Basic hex address and length parsing
+        let cli_command = CliCommandParser::from("disassemble #0x1000 0x10").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Disassemble { start, end }
+            if start == 0x1000 && end == 0x100F
+        ));
+
+        // With symbols for start address
+        let mut symbols = SymbolTable::new();
+        symbols.add_symbol(0x1234, "code_start".to_string());
+        let cli_command = CliCommandParser::from_with_context(
+            "disassemble $code_start 0x100",
+            ParserContext::new(Some(&symbols))
+        ).unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Disassemble { start, end }
+            if start == 0x1234 && end == 0x1333
+        ));
+
+        // Test various length formats
+        let cli_command = CliCommandParser::from("disassemble #0x1000 0x1").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Disassemble { start, end }
+            if start == 0x1000 && end == 0x1000
+        ));
+
+        let cli_command = CliCommandParser::from("disassemble #0x1000 0x0f").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Disassemble { start, end }
+            if start == 0x1000 && end == 0x100E
+        ));
+
+        // Error cases
+        assert!(CliCommandParser::from("disassemble").is_err()); // Missing parameters
+        assert!(CliCommandParser::from("disassemble #0x1000").is_err()); // Missing length
+        assert!(CliCommandParser::from("disassemble #0xZZZZ 0x10").is_err()); // Invalid hex address
+        assert!(CliCommandParser::from("disassemble #0x1000 0xZZZZ").is_err()); // Invalid hex length
     }
 }
 
@@ -2352,5 +2524,79 @@ mod parser_context_tests {
                 ) if addr == 0x000F && val == 0x0A
             )
         );
+    }
+
+    // This is just to debug complex expressions and check they parse correctly
+    #[test]
+    fn test_show_parsed_command() {
+        let mut symbols = setup_test_symbols();
+        symbols.add_symbol(0x1000, "main".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // let input = "X >= 10 AND (CP >= $main AND CP <= 0x2100) AND cycle_count < 50";
+        let input = "X >= 10 AND (CP >= $main AND CP <= 0x2100) AND cycle_count < 50";
+        let node = PestParser::parse(Rule::boolean_condition, input)
+            .unwrap()
+            .next()
+            .expect("There should be one node in this input.");
+        
+        let output = context.parse_boolean_condition(node.into_inner()).unwrap();
+        
+        // Helper function to recursively print the structure
+        fn print_expr(expr: &BooleanExpression, indent: usize) -> String {
+            let spaces = " ".repeat(indent);
+            match expr {
+                BooleanExpression::And(left, right) => {
+                    format!("{}AND(\n{},\n{}\n{})", 
+                        spaces,
+                        print_expr(left, indent + 2),
+                        print_expr(right, indent + 2),
+                        spaces
+                    )
+                },
+                BooleanExpression::Or(left, right) => {
+                    format!("{}OR(\n{},\n{}\n{})", 
+                        spaces,
+                        print_expr(left, indent + 2),
+                        print_expr(right, indent + 2),
+                        spaces
+                    )
+                },
+                BooleanExpression::Not(inner) => {
+                    format!("{}NOT(\n{})", 
+                        spaces,
+                        print_expr(inner, indent + 2)
+                    )
+                },
+                BooleanExpression::Equal(left, right) => {
+                    format!("{}Equal({:?}, {:?})", spaces, left, right)
+                },
+                BooleanExpression::Different(left, right) => {
+                    format!("{}Different({:?}, {:?})", spaces, left, right)
+                },
+                BooleanExpression::StrictlyGreater(left, right) => {
+                    format!("{}StrictlyGreater({:?}, {:?})", spaces, left, right)
+                },
+                BooleanExpression::StrictlyLesser(left, right) => {
+                    format!("{}StrictlyLesser({:?}, {:?})", spaces, left, right)
+                },
+                BooleanExpression::GreaterOrEqual(left, right) => {
+                    format!("{}GreaterOrEqual({:?}, {:?})", spaces, left, right)
+                },
+                BooleanExpression::LesserOrEqual(left, right) => {
+                    format!("{}LesserOrEqual({:?}, {:?})", spaces, left, right)
+                },
+                BooleanExpression::Value(val) => {
+                    format!("{}Value({})", spaces, val)
+                },
+                BooleanExpression::MemorySequence(addr, bytes) => {
+                    format!("{}MemorySequence({:?}, {:?})", spaces, addr, bytes)
+                },
+            }
+        }
+
+        println!("\nParsed condition structure:\n{}", print_expr(&output, 0));
+
+
     }
 }
