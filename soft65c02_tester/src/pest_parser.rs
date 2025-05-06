@@ -29,19 +29,52 @@ impl<'a> ParserContext<'a> {
         Self { symbols }
     }
 
-    fn parse_hex(&self, hex_str: &str) -> AppResult<usize> {
+    fn prepare_hex_str(hex_str: &str) -> String {
+        if hex_str.is_empty() {
+            return String::new();
+        }
+        // If length is odd, pad with a leading zero
+        if hex_str.len() % 2 == 1 {
+            format!("0{}", hex_str)
+        } else {
+            hex_str.to_string()
+        }
+    }
+
+    // Single function to parse hex string into bytes
+    fn parse_hex_to_bytes(&self, hex_str: &str) -> AppResult<Vec<u8>> {
         if hex_str.is_empty() {
             return Err(anyhow!("Empty string is not a valid Hexadecimal."));
         }
-        let bytes = hex::decode(hex_str)?;
-        let mut addr: usize = 0;
-        for byte in bytes.iter() {
-            addr = addr << 8 | (*byte as usize);
-        }
-        Ok(addr)
+        let hex_str = Self::prepare_hex_str(hex_str);
+        hex::decode(&hex_str).map_err(|e| anyhow!("Failed to parse hex value '{}': {}", hex_str, e))
     }
 
-    pub fn parse_memory(&self, pair: &Pair<Rule>) -> AppResult<usize> {
+    fn parse_hex(&self, hex_str: &str) -> AppResult<usize> {
+        // Parse to bytes first
+        let bytes = self.parse_hex_to_bytes(hex_str)?;
+        // Convert bytes to usize (big endian - most significant byte first)
+        let mut value = 0usize;
+        for &byte in bytes.iter() {
+            value = (value << 8) | (byte as usize);
+        }
+        Ok(value)
+    }
+
+    // Parse a comma-separated sequence of hex values into bytes
+    // e.g., "F,FF,A" -> [0x0F, 0xFF, 0x0A]
+    fn parse_hex_sequence(&self, sequence: &str) -> AppResult<Vec<u8>> {
+        sequence
+            .split(',')
+            .map(|x| {
+                let x = x.trim();
+                // Parse each byte individually
+                self.parse_hex_to_bytes(x).map(|mut v| v.remove(0))
+            })
+            .collect()
+    }
+
+    fn parse_memory(&self, pair: &Pair<Rule>) -> AppResult<usize> {
         match pair.as_rule() {
             Rule::memory_address => {
                 let inner = pair.clone().into_inner().next().unwrap();
@@ -65,45 +98,86 @@ impl<'a> ParserContext<'a> {
         }
     }
 
-    pub fn parse_boolean_condition(&self, mut nodes: Pairs<Rule>) -> AppResult<BooleanExpression> {
-        let node = nodes.next().unwrap();
-        let expression = match node.as_rule() {
-            Rule::boolean => BooleanExpression::Value(node.as_str() == "true"),
-            Rule::comparison => self.parse_comparison(node.into_inner())?,
-            Rule::memory_sequence => {
-                let mut seq_nodes = node.into_inner();
-                let addr_node = seq_nodes.next().unwrap();
-                let addr = self.parse_source_memory(&addr_node)?;
-                let bytes_list_node = seq_nodes.next().unwrap();
-                let bytes_node = bytes_list_node.into_inner().next().unwrap();
-                let bytes = self.parse_bytes(bytes_node.as_str())?;
-                BooleanExpression::MemorySequence(addr, bytes)
-            },
-            smt => panic!("unknown node type '{smt:?}'. Is the Pest grammar up to date?"),
-        };
+    pub fn parse_boolean_condition(&self, nodes: Pairs<Rule>) -> AppResult<BooleanExpression> {
+        let mut nodes = nodes.peekable();
+        
+        // Get the first term
+        let first_node = nodes.next().unwrap();
+        let mut expr = self.parse_boolean_term(first_node.into_inner())?;
 
-        Ok(expression)
+        // Process remaining nodes in pairs (OR_OP + term)
+        while let Some(op) = nodes.next() {
+            match op.as_rule() {
+                Rule::OR_OP => {
+                    let right_term = nodes.next().expect("Expected term after OR");
+                    let right = self.parse_boolean_term(right_term.into_inner())?;
+                    expr = BooleanExpression::Or(Box::new(expr), Box::new(right));
+                },
+                _ => panic!("Unexpected rule in boolean condition: {:?}", op.as_rule()),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_boolean_term(&self, nodes: Pairs<Rule>) -> AppResult<BooleanExpression> {
+        let mut nodes = nodes.peekable();
+        
+        // Get the first factor
+        let first_node = nodes.next().unwrap();
+        let mut expr = self.parse_boolean_factor(first_node)?;
+
+        // Process remaining nodes in pairs (AND_OP + factor)
+        while let Some(op) = nodes.next() {
+            match op.as_rule() {
+                Rule::AND_OP => {
+                    let right_factor = nodes.next().expect("Expected factor after AND");
+                    let right = self.parse_boolean_factor(right_factor)?;
+                    expr = BooleanExpression::And(Box::new(expr), Box::new(right));
+                },
+                _ => panic!("Unexpected rule in boolean term: {:?}", op.as_rule()),
+            }
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_boolean_factor(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
+        let mut inner = node.into_inner();
+        let first = inner.next().unwrap();
+        
+        match first.as_rule() {
+            Rule::comparison => self.parse_comparison(first.into_inner()),
+            Rule::boolean_condition => self.parse_boolean_condition(first.into_inner()),
+            Rule::memory_sequence => self.parse_memory_sequence(first),
+            Rule::boolean => Ok(BooleanExpression::Value(first.as_str() == "true")),
+            Rule::NOT_OP => {
+                let factor = inner.next().expect("NOT operator should be followed by a factor");
+                Ok(BooleanExpression::Not(Box::new(self.parse_boolean_factor(factor)?)))
+            },
+            _ => panic!("unknown node type '{:?}'. Is the Pest grammar up to date?", first.as_rule()),
+        }
     }
 
     fn parse_comparison(&self, mut nodes: Pairs<Rule>) -> AppResult<BooleanExpression> {
-        let node = nodes.next().unwrap();
-        let lh = match node.as_rule() {
-            Rule::register8 | Rule::register16 | Rule::register_cycle => self.parse_source_register(&node),
-            Rule::memory_address => self.parse_source_memory(&node)?,
-            Rule::value8 | Rule::value16 => self.parse_source_value(&node)?,
-            v => panic!("unexpected node '{:?}' here.", v),
-        };
-        let middle_node = nodes.next().unwrap();
-        let node = nodes.next().unwrap();
-        
-        let rh = match node.as_rule() {
-            Rule::register8 | Rule::register16 | Rule::register_cycle => self.parse_source_register(&node),
-            Rule::memory_address => self.parse_source_memory(&node)?,
-            Rule::value8 | Rule::value16 => self.parse_source_value(&node)?,
-            v => panic!("unexpected node '{:?}' here.", v),
+        let lh_node = nodes.next().unwrap();
+        let lh = match lh_node.as_rule() {
+            Rule::register8 | Rule::register16 | Rule::register_cycle => self.parse_source_register(&lh_node),
+            Rule::memory_address => self.parse_source_memory(&lh_node)?,
+            Rule::value8 | Rule::value16 => self.parse_source_value(&lh_node)?,
+            v => panic!("unexpected node '{:?}' in comparison", v),
         };
 
-        let expression = match middle_node.as_str() {
+        let op = nodes.next().unwrap();
+        let rh_node = nodes.next().unwrap();
+        let rh = match rh_node.as_rule() {
+            Rule::register8 | Rule::register16 | Rule::register_cycle => self.parse_source_register(&rh_node),
+            Rule::memory_address => self.parse_source_memory(&rh_node)?,
+            Rule::value8 | Rule::value16 => self.parse_source_value(&rh_node)?,
+            v => panic!("unexpected node '{:?}' in comparison", v),
+        };
+
+        Ok(match op.as_str() {
             "=" => BooleanExpression::Equal(lh, rh),
             ">=" => BooleanExpression::GreaterOrEqual(lh, rh),
             ">" => BooleanExpression::StrictlyGreater(lh, rh),
@@ -111,9 +185,7 @@ impl<'a> ParserContext<'a> {
             "<" => BooleanExpression::StrictlyLesser(lh, rh),
             "!=" => BooleanExpression::Different(lh, rh),
             v => panic!("unknown operator {:?}", v),
-        };
-
-        Ok(expression)
+        })
     }
 
     fn parse_source_register(&self, node: &Pair<Rule>) -> Source {
@@ -134,32 +206,36 @@ impl<'a> ParserContext<'a> {
     }
 
     fn parse_source_value(&self, node: &Pair<Rule>) -> AppResult<Source> {
-        let value_str = &node.as_str()[2..]; // Skip the "0x" prefix
-        let value = self.parse_hex(value_str)?;
+        let value_str = node.as_str();
+        let value = if value_str.starts_with("0x") {
+            // Parse hex value
+            self.parse_hex(&value_str[2..])?
+        } else if value_str.starts_with("0b") {
+            // Parse binary value
+            usize::from_str_radix(&value_str[2..], 2)
+                .map_err(|e| anyhow!("Failed to parse binary value '{}': {}", value_str, e))?
+        } else {
+            // Parse decimal value
+            value_str.parse::<usize>()
+                .map_err(|e| anyhow!("Failed to parse decimal value '{}': {}", value_str, e))?
+        };
         
         // Validate the value size matches the rule type
         match node.as_rule() {
             Rule::value8 => {
                 if value > 0xFF {
-                    return Err(anyhow!("Value 0x{:X} is too large for 8-bit value", value));
+                    return Err(anyhow!("Value {} is too large for 8-bit value", value));
                 }
             }
             Rule::value16 => {
                 if value > 0xFFFF {
-                    return Err(anyhow!("Value 0x{:X} is too large for 16-bit value", value));
+                    return Err(anyhow!("Value {} is too large for 16-bit value", value));
                 }
             }
             _ => panic!("Unexpected rule in parse_source_value: {:?}", node.as_rule()),
         }
         
         Ok(Source::Value(value))
-    }
-
-    fn parse_bytes(&self, bytes: &str) -> AppResult<Vec<u8>> {
-        bytes
-            .split(',')
-            .map(|x| hex::decode(x.trim()).map(|v| v[0]).map_err(|e| anyhow!(e)))
-            .collect()
     }
 
     fn parse_string_literal(&self, str_content: &str) -> Vec<u8> {
@@ -185,6 +261,27 @@ impl<'a> ParserContext<'a> {
         bytes
     }
 
+    fn parse_memory_sequence(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
+        let mut seq_nodes = node.into_inner();
+        let addr_node = seq_nodes.next().expect("memory_sequence should have a memory_address node");
+        let addr = self.parse_source_memory(&addr_node)?;
+        
+        let sequence_node = seq_nodes.next().expect("memory_sequence should have a bytes_list or string_literal node");
+        let bytes = match sequence_node.as_rule() {
+            Rule::bytes_list => {
+                let bytes_node = sequence_node.into_inner().next().expect("bytes_list should contain a bytes node");
+                self.parse_hex_sequence(bytes_node.as_str())?
+            }
+            Rule::string_literal => {
+                // Remove the quotes
+                let str_content = &sequence_node.as_str()[1..sequence_node.as_str().len()-1];
+                self.parse_string_literal(str_content)
+            }
+            _ => panic!("Expected bytes_list or string_literal in memory_sequence")
+        };
+        
+        Ok(BooleanExpression::MemorySequence(addr, bytes))
+    }
 }
 
 pub struct MemoryCommandParser<'a> {
@@ -222,14 +319,20 @@ impl<'a> MemoryCommandParser<'a> {
         let addr_pair = pairs
             .next()
             .expect("there shall be a memory address argument to memory write");
-        let address = self.context.parse_memory(&addr_pair)?;
+        
+        let address = match addr_pair.as_rule() {
+            Rule::memory_address => {
+                self.context.parse_memory(&addr_pair)?
+            }
+            _ => panic!("Expected memory_address, got {:?}", addr_pair.as_rule()),
+        };
         
         let bytes_node = pairs
             .next()
             .expect("There shall be some bytes to write to memory");
         
         let bytes = match bytes_node.as_rule() {
-            Rule::bytes => self.context.parse_bytes(bytes_node.as_str())?,
+            Rule::bytes => self.context.parse_hex_sequence(bytes_node.as_str())?,
             Rule::string_literal => {
                 // Remove the quotes
                 let str_content = &bytes_node.as_str()[1..bytes_node.as_str().len()-1];
@@ -878,6 +981,170 @@ mod register_parser_tests {
             )
         );
     }
+
+    #[test]
+    fn test_registers_set_value8_decimal() {
+        let input = "registers set A=192"; // 192 = 0xC0
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                RegisterCommand::Set { assignment }
+                if matches!(assignment.destination, RegisterSource::Accumulator)
+                && matches!(assignment.source, Source::Value(d) if d == 0xc0)
+            )
+        );
+    }
+
+    #[test]
+    fn test_registers_set_cycle_count_decimal() {
+        let input = "registers set cycle_count=256"; // Test the boundary value
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                RegisterCommand::Set { assignment }
+                if matches!(assignment.destination, RegisterSource::CycleCount)
+                && matches!(assignment.source, Source::Value(0x100))
+            )
+        );
+    }
+
+    #[test]
+    fn test_run_with_cycle_count_decimal() {
+        let input = "run while cycle_count < 256";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::run_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RunCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(matches!(command.stop_condition, BooleanExpression::Value(false)));
+        assert!(matches!(command.continue_condition,
+            BooleanExpression::StrictlyLesser(
+                Source::Register(RegisterSource::CycleCount),
+                Source::Value(256)
+            )
+        ));
+    }
+
+    #[test]
+    fn test_value8_decimal_too_large() {
+        let input = "registers set A=256"; // Too large for 8-bit
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let result = RegisterCommandParser::from_pairs(pairs, &context);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large for 8-bit value"));
+    }
+
+    #[test]
+    fn test_registers_set_value8_single_digit_hex() {
+        let input = "registers set A=0xF"; // Test single digit hex
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                RegisterCommand::Set { assignment }
+                if matches!(assignment.destination, RegisterSource::Accumulator)
+                && matches!(assignment.source, Source::Value(d) if d == 0x0F)
+            )
+        );
+    }
+
+    #[test]
+    fn test_memory_write_with_single_digit_hex() {
+        let input = "memory write #0x1234 0x(F,A,C)";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                MemoryCommand::Write { address, bytes }
+                if address == 0x1234 && bytes == vec![0x0F, 0x0A, 0x0C]
+            )
+        );
+    }
+
+    #[test]
+    fn test_assert_memory_sequence_single_digit_hex() {
+        let context = create_test_context();
+        let input = "assert #0x8000 ~ 0x(1,A,F) $$check memory sequence with single digit hex$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "check memory sequence with single digit hex");
+        
+        // Extract the actual values from the condition for better error messages
+        match &command.condition {
+            BooleanExpression::MemorySequence(source, bytes) => {
+                match source {
+                    Source::Memory(addr) => {
+                        assert_eq!(*addr, 0x8000, "Expected address 0x8000, got 0x{:04X}", addr);
+                    },
+                    _ => panic!("Expected Source::Memory, got {:?}", source),
+                }
+                assert_eq!(bytes, &vec![0x01, 0x0A, 0x0F], 
+                    "Expected bytes [0x01, 0x0A, 0x0F], got {:?}", 
+                    bytes.iter().map(|b| format!("0x{:02X}", b)).collect::<Vec<_>>());
+            },
+            _ => panic!("Expected MemorySequence, got {:?}", command.condition),
+        }
+    }
+
+    #[test]
+    fn test_registers_set_value16_three_digits() {
+        let input = "registers set CP=0xFFF"; // Test three digit hex
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                RegisterCommand::Set { assignment }
+                if matches!(assignment.destination, RegisterSource::CommandPointer)
+                && matches!(assignment.source, Source::Value(d) if d == 0x0FFF)
+            )
+        );
+    }
 }
 
 pub struct RunCommandParser<'a> {
@@ -897,6 +1164,7 @@ impl<'a> RunCommandParser<'a> {
     fn parse_pairs(&self, pairs: Pairs<'_, Rule>) -> AppResult<RunCommand> {
         let mut start_address = None;
         let mut stop_condition = BooleanExpression::Value(true);
+        let mut continue_condition = BooleanExpression::Value(true);
 
         for pair in pairs {
             match pair.as_rule() {
@@ -911,12 +1179,20 @@ impl<'a> RunCommandParser<'a> {
                 Rule::run_until_condition => {
                     stop_condition = self.context.parse_boolean_condition(pair.into_inner().next().unwrap().into_inner())?;
                 }
+                Rule::run_while_condition => {
+                    // For while conditions:
+                    // - Set continue_condition to the actual condition
+                    // - Set stop_condition to false (only stop on continue check or infinite loop)
+                    continue_condition = self.context.parse_boolean_condition(pair.into_inner().next().unwrap().into_inner())?;
+                    stop_condition = BooleanExpression::Value(false);
+                }
                 stmt => panic!("unknown node type {stmt:?}. Is the Pest grammar up to date?"),
             }
         }
 
         Ok(RunCommand {
             stop_condition,
+            continue_condition,
             start_address,
         })
     }
@@ -1058,6 +1334,202 @@ mod run_command_parser_tests {
             );
         }
     }
+
+    #[test]
+    fn test_run_with_while_condition() {
+        let input = "run while X = 0x42";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::run_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RunCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // For while conditions:
+        // - continue_condition should be the actual condition
+        // - stop_condition should be Value(false) to only stop on continue check or infinite loop
+        assert!(matches!(command.stop_condition, BooleanExpression::Value(false)));
+        assert!(matches!(command.continue_condition, 
+            BooleanExpression::Equal(
+                Source::Register(RegisterSource::RegisterX),
+                Source::Value(0x42)
+            )
+        ));
+    }
+
+    #[test]
+    fn test_run_with_until_condition() {
+        let input = "run until X = 0x42";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::run_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RunCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // For until conditions:
+        // - continue_condition should be Value(true) (no pre-check needed)
+        // - stop_condition should be the actual condition
+        assert!(matches!(command.continue_condition, BooleanExpression::Value(true)));
+        assert!(matches!(command.stop_condition,
+            BooleanExpression::Equal(
+                Source::Register(RegisterSource::RegisterX),
+                Source::Value(0x42)
+            )
+        ));
+    }
+
+    #[test]
+    fn test_run_with_while_then_until() {
+        let context = create_test_context();
+        
+        // First parse a while condition
+        let while_input = "run while X = 0x42";
+        let while_command = RunCommandParser::from_pairs(
+            PestParser::parse(Rule::run_instruction, while_input)
+                .unwrap()
+                .next()
+                .unwrap()
+                .into_inner(),
+            &context
+        ).unwrap();
+
+        // Verify while condition setup
+        assert!(matches!(while_command.stop_condition, BooleanExpression::Value(false)));
+        assert!(matches!(while_command.continue_condition,
+            BooleanExpression::Equal(
+                Source::Register(RegisterSource::RegisterX),
+                Source::Value(0x42)
+            )
+        ));
+
+        // Then parse an until condition
+        let until_input = "run until Y = 0x24";
+        let until_command = RunCommandParser::from_pairs(
+            PestParser::parse(Rule::run_instruction, until_input)
+                .unwrap()
+                .next()
+                .unwrap()
+                .into_inner(),
+            &context
+        ).unwrap();
+
+        // Verify until condition setup
+        assert!(matches!(until_command.continue_condition, BooleanExpression::Value(true)));
+        assert!(matches!(until_command.stop_condition,
+            BooleanExpression::Equal(
+                Source::Register(RegisterSource::RegisterY),
+                Source::Value(0x24)
+            )
+        ));
+    }
+
+    #[test]
+    fn test_run_with_complex_while_conditions() {
+        let test_cases = [
+            // Simple register comparison
+            ("run while A < 0x80", 
+                Box::new(|cond: &BooleanExpression| matches!(cond, 
+                    BooleanExpression::StrictlyLesser(
+                        Source::Register(RegisterSource::Accumulator),
+                        Source::Value(0x80)
+                    )
+                )) as Box<dyn Fn(&BooleanExpression) -> bool>
+            ),
+            
+            // Complex conditions
+            ("run while X >= 0x10",
+                Box::new(|cond: &BooleanExpression| matches!(cond,
+                    BooleanExpression::GreaterOrEqual(
+                        Source::Register(RegisterSource::RegisterX),
+                        Source::Value(0x10)
+                    )
+                ))
+            ),
+            
+            // With cycle count
+            ("run while cycle_count < 0x1000",
+                Box::new(|cond: &BooleanExpression| matches!(cond,
+                    BooleanExpression::StrictlyLesser(
+                        Source::Register(RegisterSource::CycleCount),
+                        Source::Value(0x1000)
+                    )
+                ))
+            ),
+        ];
+
+        let context = create_test_context();
+
+        for (input, matcher) in test_cases {
+            let pairs = PestParser::parse(Rule::run_instruction, input)
+                .unwrap()
+                .next()
+                .unwrap()
+                .into_inner();
+            let command = RunCommandParser::from_pairs(pairs, &context).unwrap();
+
+            // Verify stop_condition is false
+            assert!(matches!(command.stop_condition, BooleanExpression::Value(false)));
+            
+            // Verify continue_condition matches expected pattern
+            assert!(matcher(&command.continue_condition));
+            
+            assert!(command.start_address.is_none());
+        }
+    }
+
+    #[test]
+    fn test_run_with_while_and_start_address() {
+        let input = "run #0x1234 while A = 0x42";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::run_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RunCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // Verify start address
+        assert!(matches!(command.start_address, Some(RunAddress::Memory(addr)) if addr == 0x1234));
+
+        // Verify stop_condition is false
+        assert!(matches!(command.stop_condition, BooleanExpression::Value(false)));
+
+        // Verify continue_condition
+        assert!(matches!(command.continue_condition,
+            BooleanExpression::Equal(
+                Source::Register(RegisterSource::Accumulator),
+                Source::Value(0x42)
+            )
+        ));
+    }
+
+    #[test]
+    fn test_run_with_while_and_symbol() {
+        let symbols = test_utils::setup_test_symbols();
+        let context = ParserContext::new(Some(&symbols));
+        let input = "run while $byte_var = 0x42";
+        
+        let pairs = PestParser::parse(Rule::run_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RunCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // Verify stop_condition is false
+        assert!(matches!(command.stop_condition, BooleanExpression::Value(false)));
+
+        // Verify continue_condition with symbol
+        assert!(matches!(command.continue_condition,
+            BooleanExpression::Equal(
+                Source::Memory(addr),
+                Source::Value(0x42)
+            ) if addr == 0x34  // 0x34 is byte_var's address
+        ));
+    }
 }
 
 pub struct AssertCommandParser<'a> {
@@ -1102,7 +1574,7 @@ impl<'a> AssertCommandParser<'a> {
         let bytes = match sequence_node.as_rule() {
             Rule::bytes_list => {
                 let bytes_node = sequence_node.into_inner().next().expect("bytes_list should contain a bytes node");
-                self.context.parse_bytes(bytes_node.as_str())?
+                self.context.parse_hex_sequence(bytes_node.as_str())?
             }
             Rule::string_literal => {
                 // Remove the quotes
@@ -1556,5 +2028,329 @@ mod parser_context_tests {
             .next()
             .unwrap();
         context.parse_memory(&node).expect_err("Should fail when symbols table is not available");
+    }
+
+    #[test]
+    fn test_run_with_complex_conditions() {
+        let test_cases = [
+            ("run while (A < 0x80 AND X = 0x42)", "while with AND"),
+            ("run until (A = 0x42 OR X = 0x10)", "until with OR"),
+            ("run while (A = 0x42 AND X = 0x10) OR Y = 0x20", "while with AND and OR"),
+            ("run until ((A = 0x42) AND (X = 0x10))", "until with nested brackets"),
+        ];
+
+        let _context = create_test_context();
+
+        for (input, test_name) in test_cases {
+            let _pairs = PestParser::parse(Rule::run_instruction, input)
+                .unwrap_or_else(|e| panic!("Failed to parse '{}' ({}): {}", input, test_name, e));
+        }
+    }
+
+    #[test]
+    fn test_boolean_expressions() {
+        let test_cases = [
+            // Simple comparisons
+            ("A = 0x42", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Equal(
+                    Source::Register(RegisterSource::Accumulator),
+                    Source::Value(0x42)
+                ))
+            }) as Box<dyn Fn(&BooleanExpression) -> bool>),
+
+            // Simple parenthesized expressions
+            ("(A = 0x42)", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Equal(
+                    Source::Register(RegisterSource::Accumulator),
+                    Source::Value(0x42)
+                ))
+            })),
+            
+            // Nested parentheses
+            ("((A = 0x42))", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Equal(
+                    Source::Register(RegisterSource::Accumulator),
+                    Source::Value(0x42)
+                ))
+            })),
+            // Different comparison operators
+            ("A >= 0x42", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::GreaterOrEqual(
+                    Source::Register(RegisterSource::Accumulator),
+                    Source::Value(0x42)
+                ))
+            })),
+            ("X < 0x10", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::StrictlyLesser(
+                    Source::Register(RegisterSource::RegisterX),
+                    Source::Value(0x10)
+                ))
+            })),
+            ("cycle_count != 0x100", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Different(
+                    Source::Register(RegisterSource::CycleCount),
+                    Source::Value(0x100)
+                ))
+            })),
+
+            // Basic operators
+            ("A = 0x42 AND X = 0x10", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::And(_, _))
+            })),
+            ("A = 0x42 OR X = 0x10", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Or(_, _))
+            })),
+
+            // Multiple AND operations (left associative)
+            ("A = 0x42 AND X = 0x10 AND Y = 0x20", Box::new(|expr: &BooleanExpression| {
+                if let BooleanExpression::And(left, _) = expr {
+                    matches!(**left, BooleanExpression::And(_, _))
+                } else {
+                    false
+                }
+            })),
+            // Multiple OR operations (left associative)
+            ("A = 0x42 OR X = 0x10 OR Y = 0x20", Box::new(|expr: &BooleanExpression| {
+                if let BooleanExpression::Or(left, _) = expr {
+                    matches!(**left, BooleanExpression::Or(_, _))
+                } else {
+                    false
+                }
+            })),
+            
+            // Operator precedence (AND binds tighter than OR)
+            ("A = 0x42 AND X < 0x10 OR Y > 0x20", Box::new(|expr: &BooleanExpression| {
+                if let BooleanExpression::Or(left, right) = expr {
+                    matches!(**left, BooleanExpression::And(_, _)) &&
+                    matches!(**right, BooleanExpression::StrictlyGreater(
+                        Source::Register(RegisterSource::RegisterY),
+                        Source::Value(0x20)
+                    ))
+                } else {
+                    false
+                }
+            })),
+            
+            // AND with parenthesized OR
+            ("A = 0x42 AND (X < 0x10 OR Y > 0x20)", Box::new(|expr: &BooleanExpression| {
+                if let BooleanExpression::And(left, right) = expr {
+                    matches!(**left, BooleanExpression::Equal(
+                        Source::Register(RegisterSource::Accumulator),
+                        Source::Value(0x42)
+                    )) &&
+                    matches!(**right, BooleanExpression::Or(_, _))
+                } else {
+                    false
+                }
+            })),
+            
+            // Complex expressions with multiple operators and parentheses
+            ("(A = 0x42 AND X < 0x10) OR (Y > 0x20 AND cycle_count < 0x100)", Box::new(|expr: &BooleanExpression| {
+                if let BooleanExpression::Or(left, right) = expr {
+                    matches!(**left, BooleanExpression::And(_, _)) &&
+                    matches!(**right, BooleanExpression::And(_, _))
+                } else {
+                    false
+                }
+            })),
+            
+            // NOT operator tests
+            ("NOT A = 0x42", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Not(inner) if matches!(**inner, BooleanExpression::Equal(
+                    Source::Register(RegisterSource::Accumulator),
+                    Source::Value(0x42)
+                )))
+            })),
+
+            // NOT with parentheses
+            ("NOT (A = 0x42)", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Not(inner) if matches!(**inner, BooleanExpression::Equal(
+                    Source::Register(RegisterSource::Accumulator),
+                    Source::Value(0x42)
+                )))
+            })),
+
+            // NOT with AND
+            ("NOT (A = 0x42 AND X = 0x10)", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Not(inner) if matches!(**inner, BooleanExpression::And(_, _)))
+            })),
+
+            // NOT with OR
+            ("NOT (A = 0x42 OR X = 0x10)", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Not(inner) if matches!(**inner, BooleanExpression::Or(_, _)))
+            })),
+
+            // Multiple NOTs (double negation)
+            ("NOT NOT A = 0x42", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Not(outer) if matches!(**outer, BooleanExpression::Not(_)))
+            })),
+
+            // NOT with complex expressions
+            ("NOT (A = 0x42 AND X < 0x10) OR Y > 0x20", Box::new(|expr: &BooleanExpression| {
+                if let BooleanExpression::Or(left, right) = expr {
+                    let left_matches = if let BooleanExpression::Not(inner) = &**left {
+                        if let BooleanExpression::And(left_and, right_and) = &**inner {
+                            matches!(&**left_and, BooleanExpression::Equal(
+                                Source::Register(RegisterSource::Accumulator),
+                                Source::Value(0x42)
+                            )) && matches!(&**right_and, BooleanExpression::StrictlyLesser(
+                                Source::Register(RegisterSource::RegisterX),
+                                Source::Value(0x10)
+                            ))
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    let right_matches = matches!(&**right, BooleanExpression::StrictlyGreater(
+                        Source::Register(RegisterSource::RegisterY),
+                        Source::Value(0x20)
+                    ));
+                    left_matches && right_matches
+                } else {
+                    false
+                }
+            })),
+
+            // NOT with boolean literals
+            ("NOT true", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Not(inner) if matches!(**inner, BooleanExpression::Value(true)))
+            })),
+
+            ("NOT false", Box::new(|expr: &BooleanExpression| {
+                matches!(expr, BooleanExpression::Not(inner) if matches!(**inner, BooleanExpression::Value(false)))
+            })),
+        ];
+
+        let context = create_test_context();
+        
+        for (input, matcher) in test_cases {
+            let node = PestParser::parse(Rule::boolean_condition, input)
+                .unwrap_or_else(|e| panic!("Failed to parse '{}': {}", input, e))
+                .next()
+                .expect("There should be one node in this input.");
+            
+            let output = context.parse_boolean_condition(node.into_inner()).unwrap();
+            
+            assert!(matcher(&output), 
+                "Expression didn't match expected pattern for input: {}\nGot: {:?}", input, output);
+        }
+    }
+
+    #[test]
+    fn test_parse_hex_to_bytes() {
+        let context = create_test_context();
+        
+        // Single byte values
+        assert_eq!(vec![0x0F], context.parse_hex_to_bytes("F").unwrap());
+        assert_eq!(vec![0xFF], context.parse_hex_to_bytes("FF").unwrap());
+        
+        // Multi-byte values
+        assert_eq!(vec![0x0F, 0xFF], context.parse_hex_to_bytes("FFF").unwrap());
+        assert_eq!(vec![0xFF, 0xFF], context.parse_hex_to_bytes("FFFF").unwrap());
+    }
+
+    #[test]
+    fn test_parse_hex_values() {
+        let context = create_test_context();
+        
+        // 8-bit values
+        assert_eq!(0x0F, context.parse_hex("F").unwrap());
+        assert_eq!(0xFF, context.parse_hex("FF").unwrap());
+        
+        // 16-bit values
+        assert_eq!(0x0FFF, context.parse_hex("FFF").unwrap());
+        assert_eq!(0xFFFF, context.parse_hex("FFFF").unwrap());
+    }
+
+    #[test]
+    fn test_parse_byte_sequence() {
+        let context = create_test_context();
+        let result = context.parse_hex_sequence("F,FF,A").unwrap();
+        assert_eq!(vec![0x0F, 0xFF, 0x0A], result);
+    }
+
+    #[test]
+    fn test_hex_byte_ordering() {
+        let context = create_test_context();
+        
+        // Test byte ordering with different positions of zero
+        assert_eq!(0x8000, context.parse_hex("8000").unwrap(), "High byte should be preserved in first position");
+        assert_eq!(0x0080, context.parse_hex("0080").unwrap(), "High byte should be preserved in second position");
+        assert_eq!(0x1234, context.parse_hex("1234").unwrap(), "Bytes should be in correct order");
+        assert_eq!(0x0012, context.parse_hex("0012").unwrap(), "Leading zeros should be preserved");
+    }
+
+    #[test]
+    fn test_parse_memory_with_hex_address_formats() {
+        let context = create_test_context();
+        
+        // Test full 4-digit address
+        let input = "#0x1234";
+        let node = PestParser::parse(Rule::hex_address, input)
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(0x1234, context.parse_memory(&node).unwrap());
+
+        // Test 3-digit address
+        let input = "#0x123";
+        let node = PestParser::parse(Rule::hex_address, input)
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(0x0123, context.parse_memory(&node).unwrap());
+
+        // Test 2-digit address
+        let input = "#0x12";
+        let node = PestParser::parse(Rule::hex_address, input)
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(0x0012, context.parse_memory(&node).unwrap());
+
+        // Test single-digit address
+        let input = "#0x1";
+        let node = PestParser::parse(Rule::hex_address, input)
+            .unwrap()
+            .next()
+            .unwrap();
+        assert_eq!(0x0001, context.parse_memory(&node).unwrap());
+    }
+
+    #[test]
+    fn test_parse_memory_with_hex_address_in_commands() {
+        let context = create_test_context();
+
+        // Test in memory write command
+        let input = "memory write #0xF 0x(42,A)";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x000F && bytes == vec![0x42, 0x0A])
+        );
+
+        // Test in assert command
+        let input = "assert #0xF = 0xA  $$test short hex address and value$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command.condition, 
+                BooleanExpression::Equal(
+                    Source::Memory(addr),
+                    Source::Value(val)
+                ) if addr == 0x000F && val == 0x0A
+            )
+        );
     }
 }

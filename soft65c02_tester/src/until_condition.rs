@@ -170,6 +170,7 @@ pub enum BooleanExpression {
     Value(bool),
     And(Box<BooleanExpression>, Box<BooleanExpression>),
     Or(Box<BooleanExpression>, Box<BooleanExpression>),
+    Not(Box<BooleanExpression>),
     MemorySequence(Source, Vec<u8>),  // For comparing memory contents against a sequence of bytes
 }
 
@@ -281,6 +282,12 @@ impl BooleanExpression {
                     None
                 }
             }
+            BooleanExpression::Not(expr) => {
+                match expr.solve(registers, memory) {
+                    Some(_) => None,  // Expression is false, so Not is true
+                    None => Some(format!("({self}) condition is true when it should be false")),
+                }
+            }
             BooleanExpression::MemorySequence(source, expected_bytes) => {
                 if let Source::Memory(addr) = source {
                     if let Ok(actual_bytes) = memory.read(*addr, expected_bytes.len()) {
@@ -321,6 +328,7 @@ impl fmt::Display for BooleanExpression {
             BooleanExpression::Value(val) => write!(f, "{}", if *val { "true" } else { "false" }),
             BooleanExpression::And(expr1, expr2) => write!(f, "{} AND {}", expr1, expr2),
             BooleanExpression::Or(expr1, expr2) => write!(f, "({} OR {})", expr1, expr2),
+            BooleanExpression::Not(expr) => write!(f, "NOT ({})", expr),
             BooleanExpression::MemorySequence(source, bytes) => {
                 write!(f, "{} ~ 0x({})", source, 
                     bytes.iter()
@@ -385,5 +393,66 @@ mod tests_boolean_expression {
             format!("{}", expr),
             "#0x8000 ~ 0x(01,a2,f3)"
         );
+    }
+
+    #[test]
+    fn test_not_expression() {
+        let memory = Memory::new_with_ram();
+        let mut registers = Registers::new(0);
+        registers.accumulator = 0x42;
+
+        // Test NOT with a true condition (A = 0x42)
+        let expr = BooleanExpression::Not(Box::new(BooleanExpression::Equal(
+            Source::Register(RegisterSource::Accumulator),
+            Source::Value(0x42),
+        )));
+        assert!(expr.solve(&registers, &memory).is_some()); // NOT true = false
+
+        // Test NOT with a false condition (A != 0x43)
+        let expr = BooleanExpression::Not(Box::new(BooleanExpression::Equal(
+            Source::Register(RegisterSource::Accumulator),
+            Source::Value(0x43),
+        )));
+        assert!(expr.solve(&registers, &memory).is_none()); // NOT false = true
+
+        // Test display formatting
+        assert_eq!(
+            format!("{}", expr),
+            "NOT (A = 0x43)"
+        );
+    }
+
+    #[test]
+    fn test_not_with_complex_conditions() {
+        let memory = Memory::new_with_ram();
+        let mut registers = Registers::new(0);
+        registers.accumulator = 0x42;
+        registers.register_x = 0x10;
+
+        // Test NOT with AND
+        let expr = BooleanExpression::Not(Box::new(BooleanExpression::And(
+            Box::new(BooleanExpression::Equal(
+                Source::Register(RegisterSource::Accumulator),
+                Source::Value(0x42),
+            )),
+            Box::new(BooleanExpression::Equal(
+                Source::Register(RegisterSource::RegisterX),
+                Source::Value(0x10),
+            )),
+        )));
+        assert!(expr.solve(&registers, &memory).is_some()); // NOT (true AND true) = false
+
+        // Test NOT with OR
+        let expr = BooleanExpression::Not(Box::new(BooleanExpression::Or(
+            Box::new(BooleanExpression::Equal(
+                Source::Register(RegisterSource::Accumulator),
+                Source::Value(0x99), // false
+            )),
+            Box::new(BooleanExpression::Equal(
+                Source::Register(RegisterSource::RegisterX),
+                Source::Value(0x99), // false
+            )),
+        )));
+        assert!(expr.solve(&registers, &memory).is_none()); // NOT (false OR false) = true
     }
 }
