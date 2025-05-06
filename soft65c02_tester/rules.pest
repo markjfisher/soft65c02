@@ -30,13 +30,26 @@ memory_write = { ^"write" ~ memory_address ~ (^"0x(" ~ bytes ~ ")" | string_lite
 
 target_name = { "atari" | "apple" }
 
-run_instruction = { ^"run" ~ (run_address)? ~ (run_until_condition)? }
+run_instruction = { ^"run" ~ (run_address)? ~ (run_until_condition | run_while_condition)? }
 run_until_condition = { ^"until" ~ boolean_condition }
+run_while_condition = { ^"while" ~ boolean_condition }
 run_address = { ^"init" | memory_address }
 
 assert_instruction = { ^"assert" ~ boolean_condition ~ "$$" ~ description ~ "$$"}
 
-boolean_condition = { boolean | memory_sequence | comparison }
+boolean_condition = { boolean_term ~ (OR_OP ~ boolean_term)* }
+boolean_term = { boolean_factor ~ (AND_OP ~ boolean_factor)* }
+boolean_factor = { 
+    boolean |
+    memory_sequence |
+    comparison |
+    "(" ~ boolean_condition ~ ")" |
+    NOT_OP ~ boolean_factor
+}
+
+AND_OP = { ^"AND" }
+OR_OP = { ^"OR" }
+NOT_OP = { ^"NOT" }
 
 boolean = { ^"true" | ^"false" }
 comparison = { comparison16 | comparison8 | comparison_cycle }
@@ -52,17 +65,17 @@ location8 = _{ memory_address | register8 }
 location_cycle = _{ register_cycle }
 
 memory_address = { hex_address | symbol_reference }
-hex_address = { "#0x" ~ ASCII_HEX_DIGIT{4} }
+hex_address = @{ "#0x" ~ ASCII_HEX_DIGIT{1,4} }
 symbol_reference = { "$" ~ symbol_name }
 symbol_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 register16 = { "CP" }
 register8 = { "A" | "X" | "Y" | "SP" | "S" }
 register_cycle = { "cycle_count" }
-value16 = { "0x" ~ ASCII_HEX_DIGIT{4} }
-value8 = { "0x" ~ ASCII_HEX_DIGIT{2} | "0b" ~ ASCII_BIN_DIGIT{8} }
+value16 = @{ "0x" ~ ASCII_HEX_DIGIT{1,4} | ASCII_DIGIT+ }
+value8 = @{ "0x" ~ ASCII_HEX_DIGIT{1,2} | "0b" ~ ASCII_BIN_DIGIT{8} | ASCII_DIGIT+ }
 bytes_list = { ^"0x(" ~ bytes ~ ")" }
-bytes = @{ ASCII_HEX_DIGIT{2} ~ ("," ~ ASCII_HEX_DIGIT{2})* }
+bytes = @{ ASCII_HEX_DIGIT{1,2} ~ ("," ~ ASCII_HEX_DIGIT{1,2})* }
 size_parameter = { ASCII_DIGIT+ }
 
 standard_operator = { ">=" | "<=" | "!=" | "=" | ">" | "<" }

@@ -218,30 +218,42 @@ run until false
 
 Note that in all cases, the execution will stop if the command pointer register has not changed after an instruction to prevent dummy infinite loops or when the `STP` instruction is met.
 
+#### run while a condition is true
+
+In addition to running until a condition is met, you can run while a condition remains true:
+
+```
+// Run as long as X is less than 0x80
+run while X < 0x80
+
+// Run as long as a complex condition is true
+run while (A = 0x42 AND X < 0x10) OR Y > 0x20
+```
+
+The condition is checked before each instruction. If the condition is false, execution stops immediately without executing the next instruction.
+
 ### cycle timing
 
-Cycle times are tracked for each instructions, and are based on 65c02 timings where they differ from standard 6502, which are rare.
-Additionally page boundaries and branches are taken account of in calculating the cycle times.
+The emulator accurately tracks CPU cycle timing through the `cycle_count` register. This is a 64-bit counter that tracks the total number of cycles executed by the CPU. Each instruction consumes a specific number of cycles based on:
 
-Each log line ends with the cycle time for that particular instruction.
-If you run multiple instructions, at the end of the run, a total will be output after the execution stops. The total is not displayed if only 1 instruction is executed, as the time is output on the statement itself.
+- The base instruction timing
+- Additional cycles for page boundary crossings in indexed addressing modes
+- Extra cycles for decimal mode arithmetic on the 65C02
+- Branch instruction timing (additional cycle when taken, and another when crossing page boundary)
 
+The cycle count can be:
+- Reset using `registers set cycle_count=0`
+- Used as a condition in `run while` statements (e.g., `run while cycle_count < 256`)
+- Compared against decimal or hex values (e.g., `assert cycle_count = 42` or `assert cycle_count = 0x2A`)
+
+Example usage:
 ```
-🚀 #0x2006: (a2 00)       LDX  #$00     (#0x2007)  [X=0x00][S=nv-BdiZc][2]
-🚀 #0x2008: (8e c8 02)    STX  $02C8    (#0x02C8)  0x00[S=nv-BdiZc][4]
-🕒 Total cycles: 6
-```
-
-#### resetting the cycle count
-
-`cycle_count` is a fake register, and can be manipulated in the same way as normal registers. This can be useful if wish to capture different cycle times from particular
-points in the test.
-
-```
-registers set cycle_count=0x00
+registers set cycle_count=0             // reset cycle counter
+run while cycle_count < 256             // run until 256 cycles have passed
+assert cycle_count >= 0x100             // verify minimum cycles executed
 ```
 
-
+Note that when using cycle_count in a `run while` condition, the execution will continue until the condition is checked after completing the current instruction. This means the final cycle count may be slightly higher than the specified value due to multi-cycle instructions.
 
 ### Assertions
 
@@ -259,6 +271,23 @@ Each assertion has a text description that is displayed when evaluated.
 ```
 assert false    $$this assertion always fails$$
 assert true     $$although always ok, this assertion is not evaluated$$
+```
+
+#### Logical Operators
+
+Conditions can be combined using logical operators AND, OR, and NOT:
+
+```
+assert A = 0x42 AND X = 0x10   $$both conditions must be true$$
+assert A = 0x42 OR X = 0x10    $$at least one condition must be true$$
+assert NOT A = 0x42            $$condition must be false$$
+```
+
+Complex expressions with parentheses are supported:
+
+```
+assert (A = 0x42 AND X < 0x10) OR Y > 0x20   $$complex condition$$
+assert NOT (A = 0x42 AND X = 0x10)           $$negation of a compound condition$$
 ```
 
 #### asserting sequence of bytes
@@ -286,6 +315,39 @@ memory write #0x1100 0x(61,62,63,0a,00,64,65,66)
 // equivalent assertions
 assert #0x1100 ~ "abc\n\0def"  $$string matches at location 0x1100 with string comparison$$
 assert #0x1100 ~ 0x(61,62,63,0a,00,64,65,66)  $$string matches at location 0x1100 with bytes comparison$$
+```
+
+### Value Formats
+
+Values can be specified in several formats:
+
+#### Hexadecimal Values
+
+Hexadecimal values can be written in both long and short forms:
+```
+assert A = 0x0F   // long form
+assert A = 0xF    // short form - single digit is allowed
+```
+
+This applies to all contexts where hex values are used:
+```
+memory write #0x1234 0x(F,A,C)   // short form in byte sequences
+registers set A=0xF              // short form in register assignment
+```
+
+#### Decimal Values
+
+Values can also be specified in decimal format:
+```
+assert A = 42        // decimal value
+assert X >= 128      // decimal comparison
+run while A < 200    // decimal in conditions
+```
+
+This works in any context where a value is expected:
+```
+registers set A=42              // decimal in register assignment
+run until cycle_count >= 256    // decimal in cycle count comparison
 ```
 
 

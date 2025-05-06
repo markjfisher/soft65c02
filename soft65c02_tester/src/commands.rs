@@ -79,6 +79,7 @@ pub enum RunAddress {
 #[derive(Debug)]
 pub struct RunCommand {
     pub stop_condition: BooleanExpression,
+    pub continue_condition: BooleanExpression,
     pub start_address: Option<RunAddress>,
 }
 
@@ -98,12 +99,12 @@ impl Command for RunCommand {
         let mut loglines: Vec<LogLine> = Vec::new();
         let mut cp = registers.command_pointer;
 
-        loop {
+        // solve() returns None for truthy conditions (should continue)
+        while self.continue_condition.solve(registers, memory).is_none() {
             loglines.push(execute_step(registers, memory)?);
 
-            if registers.command_pointer == cp
-                || self.stop_condition.solve(registers, memory).is_none()
-            {
+            let should_stop = self.stop_condition.solve(registers, memory).is_none();
+            if registers.command_pointer == cp || should_stop {
                 break;
             }
             cp = registers.command_pointer;
@@ -262,6 +263,7 @@ mod run_command_tests {
     fn simple_run() {
         let command = RunCommand {
             stop_condition: BooleanExpression::Value(true),
+            continue_condition: BooleanExpression::Value(true),
             start_address: None,
         };
         let mut registers = Registers::new_initialized(0x1000);
@@ -276,6 +278,7 @@ mod run_command_tests {
     fn run_from_addr() {
         let command = RunCommand {
             stop_condition: BooleanExpression::Value(true),
+            continue_condition: BooleanExpression::Value(true),
             start_address: Some(RunAddress::Memory(0x1234)),
         };
         let mut registers = Registers::new_initialized(0x0000);
@@ -290,6 +293,7 @@ mod run_command_tests {
     fn run_init_vector() {
         let command = RunCommand {
             stop_condition: BooleanExpression::Value(true),
+            continue_condition: BooleanExpression::Value(true),
             start_address: Some(RunAddress::InitVector),
         };
         let mut registers = Registers::new_initialized(0x0000);
@@ -310,6 +314,7 @@ mod run_command_tests {
                 Source::Register(RegisterSource::RegisterX),
                 Source::Value(0),
             ),
+            continue_condition: BooleanExpression::Value(true),
             start_address: Some(RunAddress::Memory(0x1234)),
         };
         let mut registers = Registers::new_initialized(0x1000);
@@ -324,6 +329,7 @@ mod run_command_tests {
     fn run_stops_on_loop() {
         let command = RunCommand {
             stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::Value(true),
             start_address: None,
         };
         let mut registers = Registers::new_initialized(0x1000);
@@ -332,6 +338,84 @@ mod run_command_tests {
         let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
         assert!(matches!(token, OutputToken::Run { loglines } if loglines.len() == 1));
+    }
+
+    #[test]
+    fn test_while_condition_checked_before_execution() {
+        let command = RunCommand {
+            // For while conditions, we use continue_condition for the check
+            continue_condition: BooleanExpression::Equal(
+                Source::Register(RegisterSource::RegisterX),
+                Source::Value(0),
+            ),
+            // Stop condition is false so it only stops on continue check or infinite loop
+            stop_condition: BooleanExpression::Value(false),
+            start_address: Some(RunAddress::Memory(0x1234)),
+        };
+        let mut registers = Registers::new_initialized(0x1234);
+        registers.register_x = 1; // Set X to 1 so the condition is false immediately
+        let mut memory = Memory::new_with_ram();
+        memory.write(0x1234, &[0xe8]).unwrap(); // INX - increment X
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        // If the condition is checked before execution, no instructions should be executed
+        assert!(matches!(token, OutputToken::Run { loglines } if loglines.is_empty()));
+        // X should still be 1 since the INX instruction should not have executed
+        assert_eq!(registers.register_x, 1);
+    }
+
+    #[test]
+    fn test_while_cycle_count_condition() {
+        let command = RunCommand {
+            // Continue while cycle_count < 0x100
+            continue_condition: BooleanExpression::StrictlyLesser(
+                Source::Register(RegisterSource::CycleCount),
+                Source::Value(0x100),
+            ),
+            stop_condition: BooleanExpression::Value(false),
+            start_address: Some(RunAddress::Memory(0x1000)),
+        };
+        let mut registers = Registers::new_initialized(0x1000);
+        let mut memory = Memory::new_with_ram();
+        
+        // Program:
+        // 1000: LDX #$64    ; Load X with 100 (decimal) - 2 cycles
+        // 1002: STX $80     ; Store X to memory - 3 cycles
+        // 1004: DEX         ; Decrement X - 2 cycles
+        // 1005: BNE $1002   ; Branch if not zero (to STX) - 3 cycles
+        // Total per iteration: 8 cycles
+        // Initial LDX: 2 cycles
+        // Will stop when cycles >= 256, might overshoot due to multi-cycle instructions
+        memory.write(0x1000, &[0xa2, 0x64]).unwrap();     // LDX #$64
+        memory.write(0x1002, &[0x86, 0x80]).unwrap();     // STX $80
+        memory.write(0x1004, &[0xca]).unwrap();           // DEX
+        memory.write(0x1005, &[0xd0, 0xfb]).unwrap();     // BNE $1002 (-5 bytes)
+        memory.write(0x1007, &[0xdb]).unwrap();           // STP
+
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        // Read the last value stored at $80
+        let final_x = memory.read(0x80, 1).unwrap()[0];
+        
+        // After 31 complete iterations plus partial:
+        // - Initial X = 100 (0x64)
+        // - Decremented 31 times to 0x45
+        // - the final executions look like:
+        // Cycles: 2 (total: 255) - LogLine { address: 4100, opcode: 202, mnemonic: "DEX", resolution: AddressingModeResolution { operands: [], addressing_mode: Implied, target_address: None }, outcome: "[X=0x44][S=nv-Bdizc]", cycles: 2 }
+        // Cycles: 3 (total: 258) - LogLine { address: 4101, opcode: 208, mnemonic: "BNE", resolution: AddressingModeResolution { operands: [251], addressing_mode: Relative(4101, [251]), target_address: None }, outcome: "[CP=0x1002]", cycles: 3 }
+        // thus we have a DEX that doesn't store to $80, and so it is 1 less than the memory value.
+        // Because executions have to complete, the cycle count will often jump over the limit before the trigger condition is checked, hence 258 is larger than 256, but was the first after going over 256
+
+        assert_eq!(final_x, 0x45, "X should be 0x45 (69) after 31 iterations plus one more store");
+        assert_eq!(registers.register_x, 0x44, "X register should be 0x44 (68) after final DEX");
+
+        // Verify cycle count - we should stop when we hit or exceed 256
+        if let OutputToken::Run { loglines } = token {
+            let total_cycles: u16 = loglines.iter().map(|l| l.cycles as u16).sum();
+            assert!(total_cycles >= 256, "Should have executed at least 256 cycles");
+        } else {
+            panic!("Expected Run output token");
+        }
     }
 }
 
