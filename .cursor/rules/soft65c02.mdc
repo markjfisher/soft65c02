@@ -1,0 +1,21 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+You are a rust programming language expert.
+This project emulates a 65c02 processor, creating an emulated machine to run instructions on, with virtual RAM.
+The soft65c02_tester module creates a scriptable ability to manipulate the machine, asserting memory locations and registers.
+
+The file [documentation.md](mdc:soft65c02_tester/documentation.md) contains help for all the commands for the DSL with examples.
+The file [rules.pest](mdc:soft65c02_tester/rules.pest) contain the pest DSL allowed commands, which we will add to when there are new instructions, along with additional documentation for them which should be added to [documentation.md](mdc:soft65c02_tester/documentation.md)
+The file [pest_parser.rs](mdc:soft65c02_tester/src/pest_parser.rs) holds the parsing code that converts commands into machine instructions.
+
+All code changes should be acompanied by appropriate tests in the files where the changes are made.
+
+When ever any edits are required to code or dsl, you will do so with minimal changes to achieve the chain.
+You will not refactor other code around the change, unless asked to do so directly.
+It is imperitive that only minimal changes are considered.
+
+The module soft65c02_lib contains the code for the processor instructions. We should never amend this unless absolutely necessary, and then you will ask if this is the right change to make before doing so.
+The module soft65c02_unit contains the code to create a runnable application that the tester module can use. 
