@@ -1,12 +1,10 @@
-marker $$testing my_test function$$
+marker $$testing fn_under_test function$$
 
 memory load atari "${BINARY_PATH}"
 symbols load "${SYMBOLS_PATH}"
 
-disassemble $_main 0x8
+disassemble $_main 0x0D
 
 // Run the test
-run $_main
-run
-assert A=0x01     $$A register should be set to 1$$ 
-run until 
+run $_main while X >= 10 AND (CP >= $_main AND CP <= 0x2100) AND cycle_count < 50
+assert X = 0         $$X ends up being 0$$

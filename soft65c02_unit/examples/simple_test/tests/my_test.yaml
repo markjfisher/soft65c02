@@ -1,4 +1,4 @@
-name: my_test
+name: fn_under_test
 
 configs:
   - base_configs/atari.yaml

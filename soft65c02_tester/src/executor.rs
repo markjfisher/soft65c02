@@ -270,7 +270,7 @@ mod tests {
         assert!(matches!(output, OutputToken::Setup(_)));
 
         let output = receiver.recv().unwrap();
-        assert!(matches!(output, OutputToken::Run { loglines } if loglines.len() == 1));
+        assert!(matches!(output, OutputToken::Run { loglines, symbols } if loglines.len() == 1 && symbols.is_none()));
 
         let output = receiver.recv().unwrap();
         assert!(
@@ -291,18 +291,17 @@ mod tests {
         .join("\n");
         let (sender, receiver) = channel::<OutputToken>();
         let executor = Executor::new(ExecutorConfiguration::default());
+
         executor.run(lines.as_bytes(), sender).unwrap();
 
         let output = receiver.recv().unwrap();
-        assert!(
-            matches!(output, OutputToken::Marker { description } if description == *"load accumulator")
-        );
+        assert!(matches!(output, OutputToken::Marker { description } if description == *"load accumulator"));
 
         let output = receiver.recv().unwrap();
         assert!(matches!(output, OutputToken::Setup(_)));
 
         let output = receiver.recv().unwrap();
-        assert!(matches!(output, OutputToken::Run { loglines } if loglines.len() == 1));
+        assert!(matches!(output, OutputToken::Run { loglines, symbols } if loglines.len() == 1 && symbols.is_none()));
 
         let output = receiver.recv().unwrap();
         assert!(

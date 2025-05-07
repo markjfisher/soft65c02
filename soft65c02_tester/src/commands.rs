@@ -21,6 +21,7 @@ pub enum OutputToken {
     None,
     Run {
         loglines: Vec<LogLine>,
+        symbols: Option<SymbolTable>,
     },
     Setup(Vec<String>),
     View(Vec<String>),
@@ -92,7 +93,7 @@ pub struct RunCommand {
 }
 
 impl Command for RunCommand {
-    fn execute(&self, registers: &mut Registers, memory: &mut Memory, _symbols: &mut Option<SymbolTable>) -> AppResult<OutputToken> {
+    fn execute(&self, registers: &mut Registers, memory: &mut Memory, symbols: &mut Option<SymbolTable>) -> AppResult<OutputToken> {
         if let Some(addr) = &self.start_address {
             match addr {
                 RunAddress::InitVector => {
@@ -118,7 +119,10 @@ impl Command for RunCommand {
             cp = registers.command_pointer;
         }
 
-        let token = OutputToken::Run { loglines };
+        let token = OutputToken::Run { 
+            loglines,
+            symbols: symbols.clone(),
+        };
 
         Ok(token)
     }
@@ -279,7 +283,7 @@ mod run_command_tests {
         memory.write(0x1000, &[0xa9, 0xc0]).unwrap(); // LDA #0xc0
         let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
-        assert!(matches!(token, OutputToken::Run { loglines } if loglines.len() == 1));
+        assert!(matches!(token, OutputToken::Run { loglines, symbols } if loglines.len() == 1 && symbols.is_none()));
     }
 
     #[test]
@@ -294,7 +298,7 @@ mod run_command_tests {
         memory.write(0x1234, &[0xa9, 0xc0]).unwrap(); // LDA #0xc0
         let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
-        assert!(matches!(token, OutputToken::Run { loglines } if loglines.len() == 1));
+        assert!(matches!(token, OutputToken::Run { loglines, symbols } if loglines.len() == 1 && symbols.is_none()));
     }
 
     #[test]
@@ -310,7 +314,7 @@ mod run_command_tests {
         memory.write(0x1234, &[0xa9, 0xc0]).unwrap(); // LDA #0xc0
         let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
-        assert!(matches!(token, OutputToken::Run { loglines } if loglines.len() == 1));
+        assert!(matches!(token, OutputToken::Run { loglines, symbols } if loglines.len() == 1 && symbols.is_none()));
         assert_eq!(0x1236, registers.command_pointer);
         assert_eq!(0xc0, registers.accumulator);
     }
@@ -330,7 +334,7 @@ mod run_command_tests {
         memory.write(0x1234, &[0xa9, 0xc0, 0xaa]).unwrap(); // LDA #0xc0; TXA
         let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
-        assert!(matches!(token, OutputToken::Run { loglines } if loglines.len() == 2));
+        assert!(matches!(token, OutputToken::Run { loglines, symbols } if loglines.len() == 2 && symbols.is_none()));
     }
 
     #[test]
@@ -345,7 +349,7 @@ mod run_command_tests {
         memory.write(0x1000, &[0xd0, 0b11111110]).unwrap(); // BNE -1
         let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
-        assert!(matches!(token, OutputToken::Run { loglines } if loglines.len() == 1));
+        assert!(matches!(token, OutputToken::Run { loglines, symbols } if loglines.len() == 1 && symbols.is_none()));
     }
 
     #[test]
@@ -367,7 +371,7 @@ mod run_command_tests {
         let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
         // If the condition is checked before execution, no instructions should be executed
-        assert!(matches!(token, OutputToken::Run { loglines } if loglines.is_empty()));
+        assert!(matches!(token, OutputToken::Run { loglines, symbols } if loglines.is_empty() && symbols.is_none()));
         // X should still be 1 since the INX instruction should not have executed
         assert_eq!(registers.register_x, 1);
     }
@@ -418,7 +422,7 @@ mod run_command_tests {
         assert_eq!(registers.register_x, 0x44, "X register should be 0x44 (68) after final DEX");
 
         // Verify cycle count - we should stop when we hit or exceed 256
-        if let OutputToken::Run { loglines } = token {
+        if let OutputToken::Run { loglines, symbols: _ } = token {
             let total_cycles: u16 = loglines.iter().map(|l| l.cycles as u16).sum();
             assert!(total_cycles >= 256, "Should have executed at least 256 cycles");
         } else {
@@ -426,6 +430,7 @@ mod run_command_tests {
         }
     }
 }
+
 
 #[cfg(test)]
 mod register_command_tests {
