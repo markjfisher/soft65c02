@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 
 #[derive(Debug, Default, Clone)]
@@ -98,6 +98,17 @@ impl SymbolTable {
             .get(&addr)
             .map(|symbols| symbols.clone())
             .unwrap_or_default()
+    }
+
+    pub fn dump_to<W: Write>(&self, writer: &mut W) -> io::Result<()> {
+        let mut addresses: Vec<_> = self.symbols.keys().collect();
+        addresses.sort();
+        for addr in addresses {
+            if let Some(symbols) = self.symbols.get(addr) {
+                writeln!(writer, "  ${:04X}: {}", addr, symbols.join(", "))?;
+            }
+        }
+        Ok(())
     }
 }
 

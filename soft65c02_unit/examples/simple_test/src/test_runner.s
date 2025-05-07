@@ -5,4 +5,4 @@
 ; for this simple test, there's no parameters or anything to setup, so just call it.
 _main:
     jsr     _fn_under_test
-    rts
+    .byte   $db             ; STP on emulator
