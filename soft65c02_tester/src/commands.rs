@@ -4,8 +4,8 @@ use soft65c02_lib::{execute_step, AddressableIO, LogLine, Memory, Registers};
 
 use crate::{
     until_condition::{Assignment, BooleanExpression},
-    symbols::SymbolTable,
-    disassembler::Disassembler,
+    SymbolTable,
+    Disassembler,
     AppResult,
 };
 

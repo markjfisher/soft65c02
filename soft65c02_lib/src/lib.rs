@@ -11,3 +11,4 @@ pub use memory::AddressableIO;
 pub use memory::MemoryStack as Memory;
 pub use processing_unit::*;
 pub use registers::{Registers, STACK_BASE_ADDR};
+pub use addressing_mode::{AddressingModeResolution, AddressingMode, resolve_relative};
