@@ -68,25 +68,11 @@ impl TestRunner {
 
     fn compile(&self) -> Result<(PathBuf, PathBuf)> {
         let mut object_files = Vec::new();
-
-        // Compile main source file
-        if let Some(test_start) = &self.config.test_start {
-            let obj_file = self.compiler.compile_source(test_start, &self.work_dir)?;
-            object_files.push(obj_file);
-        }
         
-        // Compile dependencies if any
+        // Compile all source files
         if let Some(src_files) = &self.config.src_files {
             for src in src_files {
                 let obj = self.compiler.compile_source(src, &self.work_dir)?;
-                object_files.push(obj);
-            }
-        }
-        
-        // Compile additional sources if any
-        if let Some(sources) = &self.config.sources {
-            for source in sources {
-                let obj = self.compiler.compile_source(source, &self.work_dir)?;
                 object_files.push(obj);
             }
         }
