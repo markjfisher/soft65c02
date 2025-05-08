@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use anyhow::Result;
 
-use crate::config::Config;
+use crate::config::{Config, CompilerType};
 
 pub mod cc65;
 
@@ -12,9 +12,8 @@ pub trait Compiler {
     fn is_verbose(&self) -> bool;
 }
 
-pub fn create_compiler(compiler_type: &str, config: &Config, verbose: bool) -> Result<Box<dyn Compiler>> {
+pub fn create_compiler(compiler_type: &CompilerType, config: &Config, verbose: bool) -> Result<Box<dyn Compiler>> {
     match compiler_type {
-        "cc65" => Ok(Box::new(cc65::CC65Compiler::new(config, verbose)?)),
-        _ => anyhow::bail!("Unsupported compiler type: {}", compiler_type),
+        CompilerType::CC65 => Ok(Box::new(cc65::CC65Compiler::new(config, verbose)?)),
     }
 } 

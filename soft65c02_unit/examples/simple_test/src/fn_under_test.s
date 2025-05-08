@@ -1,10 +1,16 @@
         .export     _fn_under_test
         .export     x_loop
 
+        .import     bar
+        .import     foo
+
         .include    "zeropage.inc"
 
 ; this is some function under test, could be any name any code
 _fn_under_test:
+    jsr     bar
+    jsr     foo
+
     ldy     #$00
     lda     #<my_loc
     sta     ptr1
