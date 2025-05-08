@@ -13,7 +13,7 @@ use crate::{
     until_condition::{Assignment, BooleanExpression, RegisterSource, Source},
     atari_binary::AtariBinary,
     apple_single::AppleSingle,
-    symbols::SymbolTable,
+    SymbolTable,
     AppResult,
 };
 
