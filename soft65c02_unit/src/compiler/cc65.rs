@@ -8,6 +8,7 @@ use crate::config::Config;
 pub struct CC65Compiler {
     target: String,
     include_paths: Vec<PathBuf>,
+    asm_include_paths: Vec<PathBuf>,
     config_file: PathBuf,
     verbose: bool,
 }
@@ -20,6 +21,9 @@ impl CC65Compiler {
                 .ok_or_else(|| anyhow::anyhow!("No target specified in config"))?
                 .clone(),
             include_paths: config.include_paths
+                .clone()
+                .unwrap_or_default(),
+            asm_include_paths: config.asm_include_paths
                 .clone()
                 .unwrap_or_default(),
             config_file: config.config_file
@@ -53,8 +57,13 @@ impl Compiler for CC65Compiler {
         // Dependency file
         cmd.arg("--create-dep").arg(&dep_file);
         
-        // Include paths - use --asm-include-dir for assembly files
+        // C include paths
         for path in &self.include_paths {
+            cmd.arg("--include-dir").arg(path);
+        }
+
+        // Assembly include paths
+        for path in &self.asm_include_paths {
             cmd.arg("--asm-include-dir").arg(path);
         }
         

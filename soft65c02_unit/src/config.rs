@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 use anyhow::{Result, Context};
 use serde::Deserialize;
+use std::env;
+use regex::Regex;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -9,6 +11,7 @@ pub struct Config {
     pub target: Option<String>,
     pub compiler: Option<String>,
     pub include_paths: Option<Vec<PathBuf>>,
+    pub asm_include_paths: Option<Vec<PathBuf>>,
     pub config_file: Option<PathBuf>,
     pub configs: Option<Vec<PathBuf>>,
     pub test_start: Option<PathBuf>,
@@ -76,6 +79,15 @@ impl Config {
                 (None, None) => None,
             },
             
+            asm_include_paths: match (self.asm_include_paths, other.asm_include_paths) {
+                (Some(mut self_paths), Some(other_paths)) => {
+                    self_paths.extend(other_paths);
+                    Some(self_paths)
+                }
+                (Some(paths), None) | (None, Some(paths)) => Some(paths),
+                (None, None) => None,
+            },
+            
             src_files: match (self.src_files, other.src_files) {
                 (Some(mut self_files), Some(other_files)) => {
                     self_files.extend(other_files);
@@ -102,5 +114,122 @@ impl Config {
 
 pub fn load_yaml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let contents = std::fs::read_to_string(path)?;
-    Ok(serde_yaml::from_str(&contents)?)
+    let contents_with_env = replace_env_vars(&contents)?;
+    Ok(serde_yaml::from_str(&contents_with_env)?)
+}
+
+fn replace_env_vars(content: &str) -> Result<String> {
+    let re = Regex::new(r"\$\{([^}]+)\}").context("Failed to compile regex pattern")?;
+    let mut modified_content = content.to_string();
+    
+    for capture in re.captures_iter(content) {
+        let full_match = capture.get(0).unwrap().as_str();
+        let var_name = capture.get(1).unwrap().as_str();
+        
+        let value = env::var(var_name)
+            .with_context(|| format!("Environment variable '{}' not found", var_name))?;
+        modified_content = modified_content.replace(full_match, &value);
+    }
+    
+    Ok(modified_content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_replace_env_vars() {
+        env::set_var("TEST_VAR", "test_value");
+        env::set_var("ANOTHER_VAR", "another_value");
+
+        let content = "prefix_${TEST_VAR}_${ANOTHER_VAR}_suffix";
+        let result = replace_env_vars(content).unwrap();
+        assert_eq!(result, "prefix_test_value_another_value_suffix");
+
+        // Clean up
+        env::remove_var("TEST_VAR");
+        env::remove_var("ANOTHER_VAR");
+    }
+
+    #[test]
+    fn test_missing_env_var_returns_error() {
+        let content = "prefix_${NONEXISTENT_VAR}_suffix";
+        let result = replace_env_vars(content);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Environment variable 'NONEXISTENT_VAR' not found"));
+    }
+
+    #[test]
+    fn test_load_config_with_env_vars() -> Result<()> {
+        // Create a temporary directory for our test config
+        let temp_dir = TempDir::new()?;
+        let config_path = temp_dir.path().join("test_config.yaml");
+
+        // Set up test environment variables
+        env::set_var("TEST_NAME", "test_project");
+        env::set_var("TEST_TARGET", "target_dir");
+
+        // Create a test config file
+        let config_content = r#"
+name: ${TEST_NAME}
+target: ${TEST_TARGET}
+compiler: "gcc"
+"#;
+        fs::write(&config_path, config_content)?;
+
+        // Load and verify the config
+        let config: Config = Config::load(&config_path)?;
+        
+        assert_eq!(config.name, Some("test_project".to_string()));
+        assert_eq!(config.target, Some("target_dir".to_string()));
+        assert_eq!(config.compiler, Some("gcc".to_string()));
+
+        // Clean up
+        env::remove_var("TEST_NAME");
+        env::remove_var("TEST_TARGET");
+        
+        Ok(())
+    }
+
+    #[test]
+    fn test_config_merge() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        
+        // Create main config
+        let main_config_path = temp_dir.path().join("main_config.yaml");
+        env::set_var("MAIN_NAME", "main_project");
+        let main_content = r#"
+name: ${MAIN_NAME}
+target: "main_target"
+configs:
+  - "sub_config.yaml"
+"#;
+        fs::write(&main_config_path, main_content)?;
+
+        // Create sub config
+        let sub_config_path = temp_dir.path().join("sub_config.yaml");
+        env::set_var("SUB_TARGET", "sub_target");
+        let sub_content = r#"
+compiler: "gcc"
+target: ${SUB_TARGET}
+"#;
+        fs::write(&sub_config_path, sub_content)?;
+
+        // Test from main config directory
+        std::env::set_current_dir(temp_dir.path())?;
+        
+        let config = Config::load(&main_config_path)?;
+        assert_eq!(config.name, Some("main_project".to_string()));
+        assert_eq!(config.target, Some("main_target".to_string())); // Main config takes precedence
+        assert_eq!(config.compiler, Some("gcc".to_string()));
+
+        // Clean up
+        env::remove_var("MAIN_NAME");
+        env::remove_var("SUB_TARGET");
+        
+        Ok(())
+    }
 } 
