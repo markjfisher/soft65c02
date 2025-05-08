@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use super::Compiler;
-use crate::config::{Config, CC65Config};
+use crate::config::Config;
 use crate::executor::{Executor, CommandExecutor};
 use crate::filesystem::{FileSystem, DefaultFileSystem};
 
@@ -18,30 +18,22 @@ pub struct CC65Compiler {
 
 impl CC65Compiler {
     pub fn new(config: &Config, verbose: bool) -> Result<Self> {
-        // Get CC65-specific config
-        let cc65_config = if let Some(compiler_config) = &config.compiler_config {
-            compiler_config.as_any()
-                .downcast_ref::<CC65Config>()
-                .ok_or_else(|| anyhow::anyhow!("Invalid compiler configuration type"))?
-        } else {
-            return Err(anyhow::anyhow!("No compiler configuration provided"));
-        };
+        // Verify we have the required configuration
+        let target = config.target
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No target specified in config"))?
+            .clone();
+            
+        let config_file = config.config_file
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No config file specified in config"))?
+            .clone();
 
         Ok(Self {
-            target: config.target
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("No target specified in config"))?
-                .clone(),
-            include_paths: config.include_paths
-                .clone()
-                .unwrap_or_default(),
-            asm_include_paths: cc65_config.asm_include_paths
-                .clone()
-                .unwrap_or_default(),
-            config_file: cc65_config.config_file
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("No config file specified in compiler_config"))?
-                .clone(),
+            target,
+            include_paths: config.include_paths.clone().unwrap_or_default(),
+            asm_include_paths: config.asm_include_paths.clone().unwrap_or_default(),
+            config_file,
             verbose,
             executor: Box::new(CommandExecutor::new("cl65")),
             fs: Box::new(DefaultFileSystem),
@@ -56,30 +48,21 @@ impl CC65Compiler {
         executor: Box<dyn Executor>,
         fs: Box<dyn FileSystem>,
     ) -> Result<Self> {
-        // Get CC65-specific config
-        let cc65_config = if let Some(compiler_config) = &config.compiler_config {
-            compiler_config.as_any()
-                .downcast_ref::<CC65Config>()
-                .ok_or_else(|| anyhow::anyhow!("Invalid compiler configuration type"))?
-        } else {
-            return Err(anyhow::anyhow!("No compiler configuration provided"));
-        };
+        let target = config.target
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No target specified in config"))?
+            .clone();
+            
+        let config_file = config.config_file
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No config file specified in config"))?
+            .clone();
 
         Ok(Self {
-            target: config.target
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("No target specified in config"))?
-                .clone(),
-            include_paths: config.include_paths
-                .clone()
-                .unwrap_or_default(),
-            asm_include_paths: cc65_config.asm_include_paths
-                .clone()
-                .unwrap_or_default(),
-            config_file: cc65_config.config_file
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("No config file specified in compiler_config"))?
-                .clone(),
+            target,
+            include_paths: config.include_paths.clone().unwrap_or_default(),
+            asm_include_paths: config.asm_include_paths.clone().unwrap_or_default(),
+            config_file,
             verbose,
             executor,
             fs,
@@ -240,23 +223,16 @@ mod tests {
     fn create_test_config() -> Config {
         let mut config = Config::default();
         config.target = Some("nes".to_string());
-        
-        // Create CC65-specific configuration
-        let mut cc65_config = CC65Config::default();
-        cc65_config.config_file = Some(PathBuf::from("test.cfg"));
-        cc65_config.asm_include_paths = Some(vec![
+        config.compiler = Some(CompilerType::CC65);
+        config.config_file = Some(PathBuf::from("test.cfg"));
+        config.asm_include_paths = Some(vec![
             PathBuf::from("asm1"),
             PathBuf::from("asm2"),
         ]);
-        
-        config.compiler = Some(CompilerType::CC65);
-        config.compiler_config = Some(Box::new(cc65_config));
-        
         config.include_paths = Some(vec![
             PathBuf::from("include1"),
             PathBuf::from("include2"),
         ]);
-        
         config
     }
 

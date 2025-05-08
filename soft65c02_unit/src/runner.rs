@@ -16,7 +16,6 @@ pub struct TestRunner {
 impl TestRunner {
     pub fn from_yaml(test_yaml: &Path, verbose: bool) -> Result<Self> {
         if verbose {
-            println!("Current working directory: {:?}", std::env::current_dir()?);
             println!("Loading test config from: {:?}", test_yaml);
         }
         
@@ -29,25 +28,17 @@ impl TestRunner {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No compiler specified in config"))?;
         
-        // Find workspace root
-        let mut workspace_root = std::env::current_dir()?;
-        while !workspace_root.join("Cargo.toml").exists() || 
-              !std::fs::read_to_string(workspace_root.join("Cargo.toml"))?.contains("[workspace]") {
-            workspace_root = workspace_root.parent()
-                .ok_or_else(|| anyhow::anyhow!("Could not find workspace root"))?
-                .to_path_buf();
+        // Determine build directory
+        let work_dir = get_build_dir()?;
+        if verbose {
+            println!("Build directory: {:?}", work_dir);
         }
 
         // Create and clean the build directory
-        let work_dir = workspace_root.join("build").join("test-output");
         if work_dir.exists() {
             std::fs::remove_dir_all(&work_dir)?;
         }
         std::fs::create_dir_all(&work_dir)?;
-        
-        if verbose {
-            println!("Working directory: {:?}", work_dir);
-        }
 
         // Create compiler implementation
         let compiler = create_compiler(compiler_type, &config, verbose)?;
@@ -129,5 +120,45 @@ impl TestRunner {
 
     fn debug_command(&self, cmd: &Command) {
         println!("Executing: {:?}", cmd);
+    }
+}
+
+/// Get the build directory, checking environment variables and platform-specific defaults
+fn get_build_dir() -> Result<PathBuf> {
+    // First check if user specified a build directory
+    if let Ok(dir) = env::var("SOFT65C02_BUILD_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+
+    // Otherwise use platform-specific default
+    #[cfg(target_os = "linux")]
+    {
+        let cache_dir = env::var("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(env::var("HOME").unwrap()).join(".cache"));
+        Ok(cache_dir.join("soft65c02"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = env::var("USERPROFILE").unwrap();
+                PathBuf::from(home).join("AppData").join("Local")
+            });
+        Ok(local_app_data.join("soft65c02"))
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let home = env::var("HOME").unwrap();
+        Ok(PathBuf::from(home).join("Library").join("Caches").join("soft65c02"))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        // For other platforms, use a directory in the system temp directory
+        Ok(std::env::temp_dir().join("soft65c02"))
     }
 } 
