@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
-use std::process::Command;
 use std::env;
 use std::fmt;
 
 use crate::compiler::{Compiler, create_compiler};
 use crate::config::Config;
+use crate::executor::{Executor, CommandExecutor};
 
 pub struct TestRunner {
     config: Config,
@@ -13,6 +13,7 @@ pub struct TestRunner {
     compiler: Box<dyn Compiler>,
     verbose: bool,
     dry_run: bool,
+    tester_executor: Box<dyn Executor>,
 }
 
 impl fmt::Debug for TestRunner {
@@ -23,6 +24,7 @@ impl fmt::Debug for TestRunner {
             .field("compiler", &"<dyn Compiler>")
             .field("verbose", &self.verbose)
             .field("dry_run", &self.dry_run)
+            .field("tester_executor", &"<dyn Executor>")
             .finish()
     }
 }
@@ -66,6 +68,7 @@ impl TestRunner {
             compiler,
             verbose,
             dry_run,
+            tester_executor: Box::new(CommandExecutor::with_verbose("soft65c02_tester", false)),
         })
     }
 
@@ -106,22 +109,31 @@ impl TestRunner {
         if let Some(symbols) = symbols_path {
             env::set_var("SYMBOLS_PATH", symbols);
         }
+
+        if self.verbose {
+            println!("Setting test environment variables:");
+            println!("  BUILD_DIR={}", self.work_dir.display());
+            println!("  BINARY_PATH={}", binary_path.display());
+            if let Some(symbols) = symbols_path {
+                println!("  SYMBOLS_PATH={}", symbols.display());
+            }
+        }
         
-        // Run the tester directly, assuming it's in the PATH
-        let mut cmd = Command::new("soft65c02_tester");
+        // Build command arguments
+        let mut args = Vec::new();
         
         if self.verbose {
-            cmd.arg("-v");
+            args.push("-v".to_string());
         }
 
         if let Some(test_script) = &self.config.test_script {
-            cmd.arg("-i").arg(test_script);
+            args.extend(["-i".to_string(), test_script.to_string_lossy().to_string()]);
         } else {
             anyhow::bail!("No test script specified in config");
         }
 
         if self.verbose || self.dry_run {
-            self.debug_command(&cmd);
+            println!("Executing: soft65c02_tester {}", args.join(" "));
         }
         
         if self.dry_run {
@@ -129,25 +141,10 @@ impl TestRunner {
             return Ok(());
         }
         
-        let output = cmd.output()
-            .with_context(|| "Failed to execute soft65c02_tester")?;
-
-        // Print stdout for visibility
-        println!("{}", String::from_utf8_lossy(&output.stdout));
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Tests failed:\nExit code: {}\nError output:\n{}", 
-                output.status.code().unwrap_or(-1),
-                stderr);
-        }
-
-        Ok(())
+        self.tester_executor.execute(&args)
+            .map_err(|e| anyhow::anyhow!("Tests failed:\nExit code: 1\nError output:\n{}", e))
     }
 
-    fn debug_command(&self, cmd: &Command) {
-        println!("Executing: {:?}", cmd);
-    }
 }
 
 #[cfg(test)]
@@ -156,6 +153,51 @@ mod tests {
     use tempfile::TempDir;
     use std::fs;
     use crate::config::CompilerType;
+    use crate::compiler::cc65;
+    // use crate::executor::tests::MockExecutor;
+
+    // Helper function to create a basic test environment
+    fn setup_test_env() -> (TempDir, PathBuf, PathBuf) {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test.yaml");
+        let build_dir = temp_dir.path().join("build");
+
+        // Create test files
+        let test_script = temp_dir.path().join("test.s65");
+        let config_file = temp_dir.path().join("config.cfg");
+        let src_file = temp_dir.path().join("main.s");
+
+        // Create a simple source file
+        fs::write(&src_file, r#"
+            .export _main
+            _main:
+                lda #42
+                rts
+        "#).unwrap();
+
+        // Create test script
+        fs::write(&test_script, "fake script").unwrap();
+
+        // Create config file with basic linker configuration
+        fs::write(&config_file, "fake config").unwrap();
+
+        // Create config YAML
+        let content = format!(r#"
+compiler: cc65
+target: nes
+test_script: {}
+config_file: {}
+src_files:
+  - {}
+"#,
+            test_script.display(),
+            config_file.display(),
+            src_file.display(),
+        );
+        fs::write(&config_path, content).unwrap();
+
+        (temp_dir, config_path, build_dir)
+    }
 
     #[test]
     fn test_from_yaml_missing_build_dir() {
@@ -273,5 +315,230 @@ config_file: {}
         assert_eq!(runner.config.target, Some("mock".to_string()));
         assert_eq!(runner.config.test_script.as_ref().map(|p| p.canonicalize().unwrap()), Some(test_script.canonicalize().unwrap()));
         assert_eq!(runner.config.config_file.as_ref().map(|p| p.canonicalize().unwrap()), Some(config_file.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn test_compile_success() {
+        let (_temp_dir, config_path, build_dir) = setup_test_env();
+
+        // Create TestRunner with mock executor
+        let config = Config::load(&config_path).unwrap();
+        let compiler = cc65::CC65Compiler::with_mock_executor(
+            &config,
+            false,  // verbose
+            false, // not dry run
+            Box::new(crate::executor::tests::MockExecutor::new(vec![
+                Ok(()), // For compilation
+                Ok(()), // For linking
+            ])),
+        ).unwrap();
+
+        let runner = TestRunner {
+            config,
+            work_dir: build_dir.clone(),
+            compiler: Box::new(compiler),
+            verbose: false,
+            dry_run: false,
+            tester_executor: Box::new(crate::executor::tests::MockExecutor::new(vec![])),
+        };
+
+        // Run compilation
+        let result = runner.compile();
+        assert!(result.is_ok());
+
+        // Verify the returned paths are correct
+        let (binary_path, symbols_path) = result.unwrap();
+        assert_eq!(binary_path, build_dir.join("app.bin"), "Binary path should be app.bin in the build directory");
+        assert_eq!(symbols_path, build_dir.join("app.lbl"), "Symbols path should be app.lbl in the build directory");
+    }
+
+    #[test]
+    fn test_compile_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test.yaml");
+        let build_dir = temp_dir.path().join("build");
+        let src_file = temp_dir.path().join("main.s");
+
+        // Create an invalid source file
+        fs::write(&src_file, "this is not valid assembly").unwrap();
+
+        // Create config YAML
+        let content = format!(r#"
+compiler: cc65
+target: mock
+config_file: config.cfg
+src_files:
+  - {}
+"#,
+            src_file.display(),
+        );
+        fs::write(&config_path, content).unwrap();
+
+        // Create TestRunner with mock executor that will fail
+        let config = Config::load(&config_path).unwrap();
+        let compiler = cc65::CC65Compiler::with_mock_executor(
+            &config,
+            false,
+            false,
+            Box::new(crate::executor::tests::MockExecutor::new(vec![
+                Err("Mock compilation error".to_string()),
+            ])),
+        ).unwrap();
+
+        let runner = TestRunner {
+            config,
+            work_dir: build_dir.clone(),
+            compiler: Box::new(compiler),
+            verbose: false,
+            dry_run: false,
+            tester_executor: Box::new(crate::executor::tests::MockExecutor::new(vec![])),
+        };
+
+        // Run compilation
+        let result = runner.compile();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Mock compilation error"));
+    }
+
+    #[test]
+    fn test_run_tests_success() {
+        let (_temp_dir, config_path, build_dir) = setup_test_env();
+
+        // Create TestRunner with mock executor
+        let config = Config::load(&config_path).unwrap();
+        let compiler = cc65::CC65Compiler::with_mock_executor(
+            &config,
+            false,
+            false,
+            Box::new(crate::executor::tests::MockExecutor::new(vec![
+                Ok(()), // For compilation
+                Ok(()), // For linking
+            ])),
+        ).unwrap();
+
+        let runner = TestRunner {
+            config,
+            work_dir: build_dir.clone(),
+            compiler: Box::new(compiler),
+            verbose: false,
+            dry_run: false,
+            tester_executor: Box::new(crate::executor::tests::MockExecutor::new(vec![])),
+        };
+
+        // Run compilation first
+        let (binary_path, symbols_path) = runner.compile().unwrap();
+
+        // Create the output files since we're mocking the compiler
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        fs::write(&binary_path, "mock binary").unwrap();
+        fs::write(&symbols_path, "mock symbols").unwrap();
+
+        // Run tests
+        let result = runner.run_tests(&binary_path, Some(&symbols_path));
+        assert!(result.is_ok());
+
+        // Verify environment variables were set
+        assert_eq!(env::var("BUILD_DIR").unwrap(), build_dir.to_string_lossy().to_string());
+        assert_eq!(env::var("BINARY_PATH").unwrap(), binary_path.to_string_lossy().to_string());
+        assert_eq!(env::var("SYMBOLS_PATH").unwrap(), symbols_path.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn test_run_tests_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test.yaml");
+        let build_dir = temp_dir.path().join("build");
+        let test_script = temp_dir.path().join("test.s65");
+
+        // Create a failing test script
+        fs::write(&test_script, r#"
+            load binary
+            assert a == 99  # This will fail
+        "#).unwrap();
+
+        // Create config YAML
+        let content = format!(r#"
+compiler: cc65
+target: mock
+test_script: {}
+config_file: config.cfg
+"#,
+            test_script.display(),
+        );
+        fs::write(&config_path, content).unwrap();
+
+        // Create TestRunner with mock executor
+        let config = Config::load(&config_path).unwrap();
+        let compiler = cc65::CC65Compiler::with_mock_executor(
+            &config,
+            false,
+            false,
+            Box::new(crate::executor::tests::MockExecutor::new(vec![
+                Ok(()), // For compilation
+                Ok(()), // For linking
+            ])),
+        ).unwrap();
+
+        // Create a mock executor that simulates a test failure
+        let mock_tester = crate::executor::tests::MockExecutor::new(vec![
+            Err("Test assertion failed: expected a == 99".to_string()),  // Simulate test failure
+        ]);
+
+        let runner = TestRunner {
+            config,
+            work_dir: build_dir.clone(),
+            compiler: Box::new(compiler),
+            verbose: false,
+            dry_run: false,
+            tester_executor: Box::new(mock_tester),
+        };
+
+        // Run compilation first
+        let (binary_path, symbols_path) = runner.compile().unwrap();
+
+        // Create the output files since we're mocking the compiler
+        fs::create_dir_all(binary_path.parent().unwrap()).unwrap();
+        fs::write(&binary_path, "mock binary").unwrap();
+        fs::write(&symbols_path, "mock symbols").unwrap();
+
+        // Run tests - should fail
+        let result = runner.run_tests(&binary_path, Some(&symbols_path));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Test assertion failed"));
+    }
+
+    #[test]
+    fn test_full_run() {
+        let (_temp_dir, config_path, build_dir) = setup_test_env();
+
+        // Create TestRunner with mock executor
+        let config = Config::load(&config_path).unwrap();
+        let compiler = cc65::CC65Compiler::with_mock_executor(
+            &config,
+            false,
+            false,
+            Box::new(crate::executor::tests::MockExecutor::new(vec![
+                Ok(()), // For compilation
+                Ok(()), // For linking
+            ])),
+        ).unwrap();
+
+        // Create a mock executor for the tester command
+        let mock_tester = crate::executor::tests::MockExecutor::new(vec![
+            Ok(()),  // For tester execution
+        ]);
+        
+        let runner = TestRunner {
+            config,
+            work_dir: build_dir.clone(),
+            compiler: Box::new(compiler),
+            verbose: false,
+            dry_run: false,
+            tester_executor: Box::new(mock_tester),
+        };
+
+        // Run the full process
+        let result = runner.run();
+        assert!(result.is_ok(), "Runner failed with error: {:?}", result.err().unwrap());
     }
 } 
