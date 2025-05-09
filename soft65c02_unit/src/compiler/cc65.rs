@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
 use anyhow::Result;
 use std::collections::HashMap;
+use std::fs;
 
 use super::Compiler;
 use crate::config::Config;
 use crate::executor::{Executor, CommandExecutor};
-use crate::filesystem::{FileSystem, DefaultFileSystem};
 
 pub struct CC65Compiler {
     target: String,
@@ -15,7 +15,6 @@ pub struct CC65Compiler {
     verbose: bool,
     dry_run: bool,
     executor: Box<dyn Executor>,
-    fs: Box<dyn FileSystem>,
 }
 
 impl CC65Compiler {
@@ -39,18 +38,16 @@ impl CC65Compiler {
             verbose,
             dry_run,
             executor: Box::new(CommandExecutor::new("cl65")),
-            fs: Box::new(DefaultFileSystem),
         })
     }
 
-    /// Create a new compiler with custom executor and filesystem (mainly for testing)
+    /// Create a new compiler with custom executor (mainly for testing)
     #[cfg(test)]
-    pub fn with_mock_impls(
+    pub fn with_mock_executor(
         config: &Config,
         verbose: bool,
         dry_run: bool,
         executor: Box<dyn Executor>,
-        fs: Box<dyn FileSystem>,
     ) -> Result<Self> {
         let target = config.target
             .as_ref()
@@ -70,7 +67,6 @@ impl CC65Compiler {
             verbose,
             dry_run,
             executor,
-            fs,
         })
     }
 
@@ -161,8 +157,8 @@ impl CC65Compiler {
 
         if !self.dry_run {
             // Create the directory structure
-            self.fs.create_dir_all(&output_dir)
-                .map_err(|e| anyhow::anyhow!("Failed to create output directory: {}", e))?;
+            fs::create_dir_all(&output_dir)
+                .map_err(|e| anyhow::anyhow!("Failed to create output directory {}: {}", output_dir.display(), e))?;
         } else {
             println!("[DRY RUN] Would create directory: {:?}", output_dir);
         }
@@ -312,7 +308,6 @@ impl CC65Compiler {
             Ok(())
         }
     }
-
 }
 
 impl Compiler for CC65Compiler {
@@ -320,8 +315,8 @@ impl Compiler for CC65Compiler {
         self.create_output_path_mapping(sources)
     }
 
-    fn compile_source(&self, abs_source: &Path, work_dir: &Path, path_mapping: &HashMap<PathBuf, PathBuf>) -> Result<PathBuf> {
-        self.compile_source(abs_source, work_dir, path_mapping)
+    fn compile_source(&self, source: &Path, work_dir: &Path, path_mapping: &HashMap<PathBuf, PathBuf>) -> Result<PathBuf> {
+        self.compile_source(source, work_dir, path_mapping)
     }
 
     fn link_objects(&self, objects: &[PathBuf], output: &Path, work_dir: &Path) -> Result<()> {
@@ -342,8 +337,8 @@ impl Compiler for CC65Compiler {
 mod tests {
     use super::*;
     use crate::executor::tests::MockExecutor;
-    use crate::filesystem::tests::MockFileSystem;
     use crate::config::CompilerType;
+    use tempfile::TempDir;
 
     fn create_test_config() -> Config {
         let mut config = Config::default();
@@ -431,104 +426,44 @@ mod tests {
     }
 
     #[test]
-    fn test_compile_source_with_mocks() {
-        let source_path = PathBuf::from("src/test.c");
-        let mock_fs = Box::new(MockFileSystem::new(
-            vec![Ok(())],  // dir_results for create_dir_all
-            vec![
-                Ok(PathBuf::from("/abs/src/test.c")),  // source path canonicalization for mapping
-                Ok(PathBuf::from("/abs/work")),  // work dir canonicalization
-                Ok(PathBuf::from("/abs/work/build")),  // output dir canonicalization
-            ],
-        ));
+    fn test_compile_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let source_path = temp_dir.path().join("src/test.c");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::write(&source_path, "int main() { return 0; }").unwrap();
+
         let mock_executor = Box::new(MockExecutor::new(vec![Ok(())]));
-        
-        let compiler = CC65Compiler::with_mock_impls(
+        let compiler = CC65Compiler::with_mock_executor(
             &create_test_config(),
             false,
             false,
             mock_executor,
-            mock_fs,
         ).unwrap();
 
-        // Create path mapping and get canonicalized source path
+        let work_dir = PathBuf::from("build");
         let path_mapping = compiler.create_output_path_mapping(&[source_path.clone()]);
-        let abs_source = PathBuf::from("/abs/src/test.c");  // Same as mock fs returns
-
-        let result = compiler.compile_source(
-            &abs_source,
-            Path::new("work"),
-            &path_mapping,
-        );
-
+        let result = compiler.compile_source(&source_path, &work_dir, &path_mapping);
         assert!(result.is_ok());
     }
 
     #[test]
-    fn test_filesystem_failure() {
-        let source_path = PathBuf::from("src/test.c");
-        let mock_fs = Box::new(MockFileSystem::new(
-            vec![Err("Mock filesystem error".to_string())],  // dir_results
-            vec![
-                Ok(PathBuf::from("/abs/src/test.c")),  // source path canonicalization for mapping
-                Ok(PathBuf::from("/abs/work")),  // work dir canonicalization
-            ],
-        ));
-        let mock_executor = Box::new(MockExecutor::new(vec![]));
-        
-        let compiler = CC65Compiler::with_mock_impls(
-            &create_test_config(),
-            false,
-            false,
-            mock_executor,
-            mock_fs,
-        ).unwrap();
-
-        // Create path mapping and get canonicalized source path
-        let path_mapping = compiler.create_output_path_mapping(&[source_path.clone()]);
-        let abs_source = PathBuf::from("/abs/src/test.c");  // Same as mock fs returns
-
-        let result = compiler.compile_source(
-            &abs_source,
-            Path::new("work"),
-            &path_mapping,
-        );
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Mock filesystem error"));
-    }
-
-    #[test]
     fn test_compile_failure() {
-        let source_path = PathBuf::from("src/test.c");
-        let mock_fs = Box::new(MockFileSystem::new(
-            vec![Ok(())],  // dir_results
-            vec![
-                Ok(PathBuf::from("/abs/src/test.c")),  // source path canonicalization for mapping
-                Ok(PathBuf::from("/abs/work")),  // work dir canonicalization
-                Ok(PathBuf::from("/abs/work/build")),  // output dir canonicalization
-            ],
-        ));
+        let temp_dir = TempDir::new().unwrap();
+        let source_path = temp_dir.path().join("src/test.c");
+        fs::create_dir_all(source_path.parent().unwrap()).unwrap();
+        fs::write(&source_path, "int main() { return 0; }").unwrap();
+
         let mock_executor = Box::new(MockExecutor::new(vec![Err("Mock compilation error".to_string())]));
-        
-        let compiler = CC65Compiler::with_mock_impls(
+        let compiler = CC65Compiler::with_mock_executor(
             &create_test_config(),
             false,
             false,
             mock_executor,
-            mock_fs,
         ).unwrap();
 
-        // Create path mapping and get canonicalized source path
+        let work_dir = PathBuf::from("build");
         let path_mapping = compiler.create_output_path_mapping(&[source_path.clone()]);
-        let abs_source = PathBuf::from("/abs/src/test.c");  // Same as mock fs returns
-
-        let result = compiler.compile_source(
-            &abs_source,
-            Path::new("work"),
-            &path_mapping,
-        );
-
+        let result = compiler.compile_source(&source_path, &work_dir, &path_mapping);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Mock compilation error"));
     }
