@@ -2,9 +2,7 @@
 target: atari
 compiler: cc65
 
-# Compiler-specific configuration
-compiler_config:
-  config_file: "./config_min_atari.cfg"
+config_file: "./config_min_atari.cfg"
 
 # setup files for a basic application
 src_files:

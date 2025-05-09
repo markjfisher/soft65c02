@@ -11,12 +11,18 @@ pub struct TestRunner {
     work_dir: PathBuf,
     compiler: Box<dyn Compiler>,
     verbose: bool,
+    dry_run: bool,
 }
 
 impl TestRunner {
-    pub fn from_yaml(test_yaml: &Path, verbose: bool) -> Result<Self> {
-        if verbose {
+    pub fn from_yaml(test_yaml: &Path, build_dir: Option<PathBuf>, verbose: bool, dry_run: bool) -> Result<Self> {
+        // Determine build directory - command line takes precedence over environment variable
+        let work_dir = build_dir.or_else(|| env::var("SOFT65C02_BUILD_DIR").ok().map(PathBuf::from))
+            .ok_or_else(|| anyhow::anyhow!("Build directory must be specified either via --build-dir option or SOFT65C02_BUILD_DIR environment variable"))?;
+
+        if verbose || dry_run {
             println!("Loading test config from: {:?}", test_yaml);
+            println!("Build directory: {:?}", work_dir);
         }
         
         // Load test configuration
@@ -27,27 +33,26 @@ impl TestRunner {
         let compiler_type = config.compiler
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No compiler specified in config"))?;
-        
-        // Determine build directory
-        let work_dir = get_build_dir()?;
-        if verbose {
-            println!("Build directory: {:?}", work_dir);
-        }
 
         // Create and clean the build directory
-        if work_dir.exists() {
-            std::fs::remove_dir_all(&work_dir)?;
+        if !dry_run {
+            if work_dir.exists() {
+                std::fs::remove_dir_all(&work_dir)?;
+            }
+            std::fs::create_dir_all(&work_dir)?;
+        } else {
+            println!("[DRY RUN] Would remove and recreate build directory: {:?}", work_dir);
         }
-        std::fs::create_dir_all(&work_dir)?;
 
         // Create compiler implementation
-        let compiler = create_compiler(compiler_type, &config, verbose)?;
+        let compiler = create_compiler(compiler_type, &config, verbose, dry_run)?;
         
         Ok(Self {
             config,
             work_dir,
             compiler,
             verbose,
+            dry_run,
         })
     }
 
@@ -62,8 +67,12 @@ impl TestRunner {
         
         // Compile all source files
         if let Some(src_files) = &self.config.src_files {
+            // Create path mapping for the already canonicalized paths
+            let path_mapping = self.compiler.create_output_path_mapping(src_files);
+
+            // Compile each source file using the mapping
             for src in src_files {
-                let obj = self.compiler.compile_source(src, &self.work_dir)?;
+                let obj = self.compiler.compile_source(src, &self.work_dir, &path_mapping)?;
                 object_files.push(obj);
             }
         }
@@ -98,8 +107,13 @@ impl TestRunner {
             anyhow::bail!("No test script specified in config");
         }
 
-        if self.verbose {
+        if self.verbose || self.dry_run {
             self.debug_command(&cmd);
+        }
+        
+        if self.dry_run {
+            println!("[DRY RUN] Would execute soft65c02_tester");
+            return Ok(());
         }
         
         let output = cmd.output()
@@ -120,45 +134,5 @@ impl TestRunner {
 
     fn debug_command(&self, cmd: &Command) {
         println!("Executing: {:?}", cmd);
-    }
-}
-
-/// Get the build directory, checking environment variables and platform-specific defaults
-fn get_build_dir() -> Result<PathBuf> {
-    // First check if user specified a build directory
-    if let Ok(dir) = env::var("SOFT65C02_BUILD_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-
-    // Otherwise use platform-specific default
-    #[cfg(target_os = "linux")]
-    {
-        let cache_dir = env::var("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(env::var("HOME").unwrap()).join(".cache"));
-        Ok(cache_dir.join("soft65c02"))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let local_app_data = env::var("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = env::var("USERPROFILE").unwrap();
-                PathBuf::from(home).join("AppData").join("Local")
-            });
-        Ok(local_app_data.join("soft65c02"))
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let home = env::var("HOME").unwrap();
-        Ok(PathBuf::from(home).join("Library").join("Caches").join("soft65c02"))
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-    {
-        // For other platforms, use a directory in the system temp directory
-        Ok(std::env::temp_dir().join("soft65c02"))
     }
 } 
