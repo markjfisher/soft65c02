@@ -49,20 +49,16 @@ impl Executor for CommandExecutor {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        if self.verbose {
-            if !stdout.is_empty() {
-                println!("Command stdout:\n{}", stdout);
-            }
-            if !stderr.is_empty() {
-                println!("Command stderr:\n{}", stderr);
-            }
+        // Always show command output
+        if !stdout.is_empty() {
+            print!("{}", stdout);
+        }
+        if !stderr.is_empty() {
+            eprint!("{}", stderr);
         }
 
         if !output.status.success() {
-            Err(format!("Command failed with status {}.\nStdout:\n{}\nStderr:\n{}", 
-                output.status.code().unwrap_or(-1),
-                stdout,
-                stderr))
+            Err(stderr.into_owned())
         } else {
             Ok(())
         }
