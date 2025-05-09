@@ -141,8 +141,9 @@ impl TestRunner {
             return Ok(());
         }
         
+        // Just propagate the error directly without wrapping
         self.tester_executor.execute(&args)
-            .map_err(|e| anyhow::anyhow!("Tests failed:\nExit code: 1\nError output:\n{}", e))
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
 }

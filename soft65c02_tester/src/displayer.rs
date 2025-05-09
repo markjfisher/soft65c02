@@ -223,7 +223,7 @@ where
                     self.output
                         .write_all(format!("📄 {description}\n").as_bytes())?;
                 }
-                OutputToken::Run { loglines, symbols } => {
+                OutputToken::Run { loglines, symbols } if self.verbose => {
                     let mut content = String::new();
                     let show_total = loglines.len() > 1;
                     let total_cycles: u32 = if show_total {
@@ -243,7 +243,7 @@ where
                     
                     self.output.write_all(content.as_bytes())?;
                 }
-                OutputToken::Setup(lines) => {
+                OutputToken::Setup(lines) if self.verbose => {
                     self.output
                         .write_all(format!("🔧 {}\n", lines.join("\n")).as_bytes())?;
                 }
