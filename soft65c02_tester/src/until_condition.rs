@@ -175,6 +175,44 @@ pub enum BooleanExpression {
 }
 
 impl BooleanExpression {
+    fn format_hex_dump(addr: usize, bytes: &[u8]) -> String {
+        let mut result = String::new();
+        for chunk_start in (0..bytes.len()).step_by(16) {
+            let chunk_end = std::cmp::min(chunk_start + 16, bytes.len());
+            let chunk = &bytes[chunk_start..chunk_end];
+            
+            // Add address
+            result.push_str(&format!("{:04X} : ", addr + chunk_start));
+            
+            // Add hex bytes
+            for &byte in chunk {
+                result.push_str(&format!("{:02X} ", byte));
+            }
+            
+            // Pad with spaces if less than 16 bytes
+            for _ in chunk.len()..16 {
+                result.push_str("   ");
+            }
+            
+            // Add ASCII representation
+            result.push_str("| ");
+            for &byte in chunk {
+                let ch = if byte >= 0x20 && byte <= 0x7E {
+                    byte as char
+                } else {
+                    '.'
+                };
+                result.push(ch);
+            }
+            
+            // Add newline if not the last line
+            if chunk_end < bytes.len() {
+                result.push('\n');
+            }
+        }
+        result
+    }
+
     /// Solve the boolean expression with the given registers and memory.
     /// If the expression is true, None is returned. Otherwise, the failure message is returned.
     pub fn solve(&self, registers: &Registers, memory: &Memory) -> Option<String> {
@@ -295,8 +333,9 @@ impl BooleanExpression {
                             None
                         } else {
                             Some(format!(
-                                "({self}) Memory at #0x{:04x} contains {:02x?} instead of expected {:02x?}",
-                                addr, actual_bytes, expected_bytes
+                                "({self})\nMemory comparison failed:\n\nExpected:\n{}\n\nActual:\n{}\n",
+                                Self::format_hex_dump(*addr, expected_bytes),
+                                Self::format_hex_dump(*addr, &actual_bytes)
                             ))
                         }
                     } else {
@@ -454,5 +493,21 @@ mod tests_boolean_expression {
             )),
         )));
         assert!(expr.solve(&registers, &memory).is_none()); // NOT (false OR false) = true
+    }
+
+    #[test]
+    fn test_hex_dump_formatting() {
+        let test_bytes = vec![
+            0x32, 0x38, 0x2f, 0x31, 0x30, 0x2f, 0x32, 0x30, 
+            0x31, 0x39, 0x20, 0x31, 0x31, 0x3a, 0x30, 0x30,
+            0x00, 0x01, 0x02  // Extra bytes to test partial line
+        ];
+        
+        let formatted = BooleanExpression::format_hex_dump(0x21C1, &test_bytes);
+        let expected = "\
+21C1 : 32 38 2F 31 30 2F 32 30 31 39 20 31 31 3A 30 30 | 28/10/2019 11:00
+21D1 : 00 01 02                                        | ...";
+        
+        assert_eq!(formatted, expected);
     }
 }
