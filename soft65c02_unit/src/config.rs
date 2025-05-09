@@ -67,11 +67,8 @@ impl Config {
 
     /// Get the order in which configs should be loaded (depth-first)
     fn get_config_load_order(path: &Path, seen: &mut HashSet<PathBuf>) -> Result<Vec<PathBuf>> {
-        let canonical_path = path.canonicalize()
-            .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
-            
-        // Check for circular dependencies
-        if !seen.insert(canonical_path.clone()) {
+        // Check for circular dependencies using the path as is
+        if !seen.insert(path.to_path_buf()) {
             return Err(anyhow::anyhow!("Circular dependency detected while loading config: {}", path.display()));
         }
         
@@ -100,7 +97,7 @@ impl Config {
         }
         
         // Then add this config
-        load_order.push(canonical_path);
+        load_order.push(path.to_path_buf());
         
         Ok(load_order)
     }
@@ -115,20 +112,35 @@ impl Config {
     }
 
     fn resolve_paths(&mut self, base_dir: &Path) {
+        // Helper function to canonicalize a path relative to base_dir
+        fn canonicalize_path(base_dir: &Path, path: &Path) -> PathBuf {
+            let full_path = base_dir.join(path);
+            match full_path.canonicalize() {
+                Ok(p) => p,
+                Err(_) => full_path,  // If canonicalization fails, use the joined path
+            }
+        }
+
         if let Some(paths) = &mut self.include_paths {
-            *paths = paths.iter().map(|p| base_dir.join(p)).collect();
+            *paths = paths.iter()
+                .map(|p| canonicalize_path(base_dir, p))
+                .collect();
         }
         if let Some(paths) = &mut self.src_files {
-            *paths = paths.iter().map(|p| base_dir.join(p)).collect();
+            *paths = paths.iter()
+                .map(|p| canonicalize_path(base_dir, p))
+                .collect();
         }
         if let Some(script) = &mut self.test_script {
-            *script = base_dir.join(script.clone());
+            *script = canonicalize_path(base_dir, script);
         }
         if let Some(cf) = &mut self.config_file {
-            *cf = base_dir.join(cf.clone());
+            *cf = canonicalize_path(base_dir, cf);
         }
         if let Some(paths) = &mut self.asm_include_paths {
-            *paths = paths.iter().map(|p| base_dir.join(p)).collect();
+            *paths = paths.iter()
+                .map(|p| canonicalize_path(base_dir, p))
+                .collect();
         }
     }
 

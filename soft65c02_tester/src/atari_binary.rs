@@ -328,7 +328,7 @@ mod tests {
         
         // Create a temporary directory with a hyphenated path
         let dir = tempdir().unwrap();
-        let test_dir = dir.path().join("test-output");
+        let test_dir = dir.path().join("build");
         std::fs::create_dir(&test_dir).unwrap();
         let test_file = test_dir.join("test-app.bin");
         

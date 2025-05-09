@@ -10,11 +10,9 @@ src_files:
   - ../src/bar/util.s
 
 include_paths:
-  - "src"
+  - "../src"
 
-# Compiler-specific configuration
-compiler_config:
-  asm_include_paths:
-    - "src"
+asm_include_paths:
+  - "../src"
 
 test_script: ./my_test.txt
