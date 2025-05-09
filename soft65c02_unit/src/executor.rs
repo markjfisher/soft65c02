@@ -11,26 +11,58 @@ pub trait Executor {
 /// A command executor that captures the executable name
 pub struct CommandExecutor {
     executable: String,
+    verbose: bool,
 }
 
 impl CommandExecutor {
     pub fn new(executable: impl Into<String>) -> Self {
         Self {
             executable: executable.into(),
+            verbose: false,
+        }
+    }
+
+    pub fn with_verbose(executable: impl Into<String>, verbose: bool) -> Self {
+        Self {
+            executable: executable.into(),
+            verbose,
         }
     }
 }
 
 impl Executor for CommandExecutor {
     fn execute(&self, args: &[String]) -> Result<(), String> {
+        if self.verbose {
+            println!("Executing command: {} {}", self.executable, args.join(" "));
+            println!("Environment variables:");
+            for (key, value) in std::env::vars() {
+                println!("  {}={}", key, value);
+            }
+        }
+
         let output = Command::new(&self.executable)
             .args(args)
+            .envs(std::env::vars())  // Pass through all environment variables
             .output()
             .map_err(|e| format!("Failed to execute {}: {}", self.executable, e))?;
 
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if self.verbose {
+            if !stdout.is_empty() {
+                println!("Command stdout:\n{}", stdout);
+            }
+            if !stderr.is_empty() {
+                println!("Command stderr:\n{}", stderr);
+            }
+        }
+
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(stderr.to_string())
+            Err(format!("Command failed with status {}.\nStdout:\n{}\nStderr:\n{}", 
+                output.status.code().unwrap_or(-1),
+                stdout,
+                stderr))
         } else {
             Ok(())
         }
