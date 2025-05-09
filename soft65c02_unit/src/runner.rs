@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, Context};
 use std::process::Command;
 use std::env;
+use std::fmt;
 
 use crate::compiler::{Compiler, create_compiler};
 use crate::config::Config;
@@ -12,6 +13,18 @@ pub struct TestRunner {
     compiler: Box<dyn Compiler>,
     verbose: bool,
     dry_run: bool,
+}
+
+impl fmt::Debug for TestRunner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestRunner")
+            .field("config", &self.config)
+            .field("work_dir", &self.work_dir)
+            .field("compiler", &"<dyn Compiler>")
+            .field("verbose", &self.verbose)
+            .field("dry_run", &self.dry_run)
+            .finish()
+    }
 }
 
 impl TestRunner {
@@ -134,5 +147,131 @@ impl TestRunner {
 
     fn debug_command(&self, cmd: &Command) {
         println!("Executing: {:?}", cmd);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::fs;
+    use crate::config::CompilerType;
+
+    #[test]
+    fn test_from_yaml_missing_build_dir() {
+        // Clear the environment variable if it exists
+        env::remove_var("SOFT65C02_BUILD_DIR");
+
+        // Create a temporary directory for our test files
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test.yaml");
+
+        // Create a minimal valid config file
+        let content = r#"
+compiler: cc65
+target: mock
+test_script: test.s65
+"#;
+        fs::write(&config_path, content).unwrap();
+
+        // Try to create TestRunner without build_dir
+        let result = TestRunner::from_yaml(
+            &config_path,
+            None,  // No build directory specified
+            false, // Not verbose
+            false, // Not dry run
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Build directory must be specified"));
+    }
+
+    #[test]
+    fn test_from_yaml_missing_config() {
+        // Create a temporary directory for our test files
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test.yaml");
+        let build_dir = temp_dir.path().join("build");
+
+        // Try to create TestRunner with non-existent config file
+        let result = TestRunner::from_yaml(
+            &config_path,
+            Some(build_dir),
+            false,
+            false,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Failed to load test config"));
+    }
+
+    #[test]
+    fn test_from_yaml_missing_compiler() {
+        // Create a temporary directory for our test files
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test.yaml");
+        let build_dir = temp_dir.path().join("build");
+
+        // Create a config file without compiler specification
+        let content = r#"
+target: mock
+test_script: test.s65
+"#;
+        fs::write(&config_path, content).unwrap();
+
+        // Try to create TestRunner with config missing compiler
+        let result = TestRunner::from_yaml(
+            &config_path,
+            Some(build_dir),
+            false,
+            false,
+        );
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No compiler specified in config"));
+    }
+
+    #[test]
+    fn test_from_yaml_dry_run() {
+        // Create a temporary directory for our test files
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("test.yaml");
+        let build_dir = temp_dir.path().join("build");
+
+        // Create test files to reference in the config
+        let test_script = temp_dir.path().join("test.s65");
+        let config_file = temp_dir.path().join("config.cfg");
+        fs::write(&test_script, "").unwrap();  // Create empty files
+        fs::write(&config_file, "").unwrap();
+
+        // Create a valid config file with relative paths
+        let content = format!(r#"
+compiler: cc65
+target: mock
+test_script: {}
+config_file: {}
+"#,
+            test_script.display(),
+            config_file.display(),
+        );
+        fs::write(&config_path, content).unwrap();
+
+        // Create TestRunner in dry run mode
+        let result = TestRunner::from_yaml(
+            &config_path,
+            Some(build_dir.clone()),
+            true,  // verbose
+            true,  // dry run
+        );
+
+        assert!(result.is_ok());
+        let runner = result.unwrap();
+        assert_eq!(runner.work_dir, build_dir);
+        assert!(runner.verbose);
+        assert!(runner.dry_run);
+        assert_eq!(runner.config.compiler, Some(CompilerType::CC65));
+        assert_eq!(runner.config.target, Some("mock".to_string()));
+        assert_eq!(runner.config.test_script.as_ref().map(|p| p.canonicalize().unwrap()), Some(test_script.canonicalize().unwrap()));
+        assert_eq!(runner.config.config_file.as_ref().map(|p| p.canonicalize().unwrap()), Some(config_file.canonicalize().unwrap()));
     }
 } 
