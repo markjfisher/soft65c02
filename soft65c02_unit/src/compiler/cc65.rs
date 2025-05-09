@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::fs;
+use std::fmt::{self, Debug};
 
 use super::Compiler;
 use crate::config::Config;
@@ -15,6 +16,20 @@ pub struct CC65Compiler {
     verbose: bool,
     dry_run: bool,
     executor: Box<dyn Executor>,
+}
+
+impl Debug for CC65Compiler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CC65Compiler")
+            .field("target", &self.target)
+            .field("include_paths", &self.include_paths)
+            .field("asm_include_paths", &self.asm_include_paths)
+            .field("config_file", &self.config_file)
+            .field("verbose", &self.verbose)
+            .field("dry_run", &self.dry_run)
+            .field("executor", &"<dyn Executor>")
+            .finish()
+    }
 }
 
 impl CC65Compiler {
