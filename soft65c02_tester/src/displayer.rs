@@ -159,6 +159,16 @@ impl<'a> LogLineFormatter<'a> {
                 .trim()
         );
 
+        // Format register state
+        let register_state = format!(
+            "{:02X}|{:02X}|{:02X}|{:02X}|{}",
+            self.log_line.registers.accumulator,
+            self.log_line.registers.register_x,
+            self.log_line.registers.register_y,
+            self.log_line.registers.stack_pointer,
+            self.log_line.registers.format_status()
+        );
+
         // Format the final output with debug markers
         format!(
             "#0x{:04X}: {: <12}{: <4} {: <25} {}[{}]",
@@ -166,7 +176,7 @@ impl<'a> LogLineFormatter<'a> {
             byte_sequence,
             self.log_line.mnemonic,
             self.format_addressing_mode(25),
-            self.log_line.outcome,
+            register_state,
             self.log_line.cycles
         )
     }
@@ -296,7 +306,7 @@ mod tests {
 
         let formatted = LogLineFormatter::new(&log_line, Some(&symbols)).format();
         assert!(formatted.contains("COLOR2"), "Symbol substitution failed");
-        assert_eq!(formatted, "#0x2002: (8d c6 02)  STA  COLOR2          (#0x02C6) (0x42)[4]");
+        assert_eq!(formatted, "#0x2002: (8d c6 02)  STA  COLOR2          (#0x02C6) 42|00|00|FF|nv-Bdizc[4]");
     }
 
     #[test]
@@ -329,7 +339,7 @@ mod tests {
 
         let formatted = LogLineFormatter::new(&log_line, Some(&symbols)).format();
         assert!(formatted.contains("ptr1+1"), "Adjacent symbol substitution failed");
-        assert_eq!(formatted, "#0x2027: (85 8b)     STA  ptr1+1          (#0x008B) (0x20)[3]");
+        assert_eq!(formatted, "#0x2027: (85 8b)     STA  ptr1+1          (#0x008B) 20|00|00|FF|nv-Bdizc[3]");
 
         // Test that it doesn't substitute if the address has its own symbol
         symbols.add_symbol(0x008B, "ptr2".to_string());
@@ -384,6 +394,6 @@ mod tests {
         // Check the output
         let output = String::from_utf8(buffer).unwrap();
         assert!(output.contains("COLOR4"), "Symbol substitution not found in output");
-        assert_eq!(output, "🚀 #0x2027: (8d c8 02)  STA  COLOR4          (#0x02C8) (0x42)[4]\n");
+        assert_eq!(output, "🚀 #0x2027: (8d c8 02)  STA  COLOR4          (#0x02C8) 42|00|00|FF|nv-Bdizc[4]\n");
     }
 }
