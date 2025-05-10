@@ -71,8 +71,8 @@ impl SymbolTable {
             }
         }
         
-        // Add to new location
-        self.symbols.entry(addr).or_default().push(name.clone());
+        // Add to new location at the start of the list
+        self.symbols.entry(addr).or_default().insert(0, name.clone());
         self.addresses.insert(name, addr);
     }
 
@@ -109,6 +109,17 @@ impl SymbolTable {
             }
         }
         Ok(())
+    }
+
+    pub fn remove_symbol(&mut self, symbol: &str) {
+        if let Some(addr) = self.addresses.remove(symbol) {
+            if let Some(symbols) = self.symbols.get_mut(&addr) {
+                symbols.retain(|s| s != symbol);
+                if symbols.is_empty() {
+                    self.symbols.remove(&addr);
+                }
+            }
+        }
     }
 }
 
@@ -178,5 +189,61 @@ mod tests {
         
         // Check old location is cleaned up
         assert!(table.get_symbols_at(0x1234).is_none() || !table.get_symbols_at(0x1234).unwrap().contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn test_symbol_removal() {
+        let mut table = SymbolTable::new();
+        
+        // Add a symbol
+        table.add_symbol(0x1234, "test".to_string());
+        assert_eq!(table.get_address("test"), Some(0x1234));
+        assert!(table.get_symbols_at(0x1234).unwrap().contains(&"test".to_string()));
+        
+        // Remove the symbol
+        table.remove_symbol("test");
+        
+        // Verify it's gone from both maps
+        assert_eq!(table.get_address("test"), None);
+        assert!(table.get_symbols_at(0x1234).is_none());
+        
+        // Test removing non-existent symbol (should not panic)
+        table.remove_symbol("nonexistent");
+    }
+
+    #[test]
+    fn test_symbol_removal_with_multiple_symbols() {
+        let mut table = SymbolTable::new();
+        
+        // Add multiple symbols at same address
+        table.add_symbol(0x1234, "test1".to_string());
+        table.add_symbol(0x1234, "test2".to_string());
+        
+        // Remove one symbol
+        table.remove_symbol("test1");
+        
+        // Verify test1 is gone but test2 remains
+        assert_eq!(table.get_address("test1"), None);
+        assert_eq!(table.get_address("test2"), Some(0x1234));
+        assert!(table.get_symbols_at(0x1234).unwrap().contains(&"test2".to_string()));
+        assert!(!table.get_symbols_at(0x1234).unwrap().contains(&"test1".to_string()));
+    }
+
+    #[test]
+    fn test_symbol_order() {
+        let mut table = SymbolTable::new();
+        
+        // Add multiple symbols at the same address in sequence
+        table.add_symbol(0x201B, "__CODE_LOAD__".to_string());
+        table.add_symbol(0x201B, "__CODE_RUN__".to_string());
+        table.add_symbol(0x201B, "_main".to_string());
+        
+        // Get the symbols at the address
+        let symbols = table.get_symbols_at(0x201B).unwrap();
+        
+        // Verify the order - most recently added should be first
+        assert_eq!(symbols[0], "_main");
+        assert_eq!(symbols[1], "__CODE_RUN__");
+        assert_eq!(symbols[2], "__CODE_LOAD__");
     }
 } 
