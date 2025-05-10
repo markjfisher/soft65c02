@@ -263,7 +263,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soft65c02_lib::{AddressingModeResolution, AddressingMode};
+    use soft65c02_lib::{LogLine, AddressingMode, AddressingModeResolution, RegisterState};
     use std::sync::mpsc::channel;
 
     #[test]
@@ -284,6 +284,14 @@ mod tests {
             },
             outcome: "(0x42)".to_string(),
             cycles: 4,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2002,
+            },
         };
 
         let formatted = LogLineFormatter::new(&log_line, Some(&symbols)).format();
@@ -309,6 +317,14 @@ mod tests {
             },
             outcome: "(0x20)".to_string(),
             cycles: 3,
+            registers: RegisterState {
+                accumulator: 0x20,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2027,
+            },
         };
 
         let formatted = LogLineFormatter::new(&log_line, Some(&symbols)).format();
@@ -338,16 +354,24 @@ mod tests {
 
         // Send a run with a LogLine that should have symbol substitution
         let log_line = LogLine {
-            address: 0x2002,
+            address: 0x2027,
             opcode: 0x8d,
             mnemonic: "STA".to_string(),
             resolution: AddressingModeResolution {
-                target_address: Some(0x02C6),
-                operands: vec![0xC6, 0x02],
-                addressing_mode: AddressingMode::Absolute([0xC6, 0x02]),
+                target_address: Some(0x02C8),
+                operands: vec![0xC8, 0x02],
+                addressing_mode: AddressingMode::Absolute([0xC8, 0x02]),
             },
             outcome: "(0x42)".to_string(),
             cycles: 4,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2027,
+            },
         };
         sender.send(OutputToken::Run { loglines: vec![log_line], symbols: Some(symbols) }).unwrap();
         
@@ -359,7 +383,7 @@ mod tests {
 
         // Check the output
         let output = String::from_utf8(buffer).unwrap();
-        assert!(output.contains("COLOR2"), "Symbol substitution not found in output");
-        assert_eq!(output, "🚀 #0x2002: (8d c6 02)  STA  COLOR2          (#0x02C6) (0x42)[4]\n");
+        assert!(output.contains("COLOR4"), "Symbol substitution not found in output");
+        assert_eq!(output, "🚀 #0x2027: (8d c8 02)  STA  COLOR4          (#0x02C8) (0x42)[4]\n");
     }
 }
