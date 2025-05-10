@@ -85,9 +85,10 @@ filename = { "\"" ~ (ASCII_ALPHANUMERIC | "." | "_" | "/" | "-" | "$" | "{" | "}
 description = { ((!"$$") ~ ANY)* }
 
 symbols_instruction = { ^"symbols" ~ symbol_action }
-symbol_action = _{ symbol_load | symbol_add }
+symbol_action = _{ symbol_load | symbol_add | symbol_remove }
 symbol_load = { "load" ~ filename }
 symbol_add = { "add" ~ symbol_name ~ "=" ~ symbol_add_value }
 symbol_add_value = { value16 | value8 | symbol_reference }
+symbol_remove = { "remove" ~ symbol_name }
 
 disassemble_instruction = { ^"disassemble" ~ memory_address ~ hex_length }

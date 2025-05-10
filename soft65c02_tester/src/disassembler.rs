@@ -324,7 +324,7 @@ mod tests {
 
         let expected_output = "\
 ---- Start of disassembly ----
-start, main:
+main, start:
 #0x1000: (a9 42)     LDA  #$42
 #0x1002: (8d 34 12)  STA  COUNTER
 #0x1005: (b1 88)     LDA  (TMP1),Y
@@ -374,7 +374,7 @@ start, main:
 
         let expected_output = "\
 ---- Start of disassembly ----
-start, main:
+main, start:
 #0x1000: (18)        CLC 
 #0x1001: (a9 10)     LDA  #$10
 #0x1003: (6d 00 20)  ADC  mem_lo
@@ -382,7 +382,7 @@ start, main:
 #0x1009: (90 0d)     BCC  branch_1
 #0x100B: (ee 01 20)  INC  mem_hi
 #0x100E: (d0 05)     BNE  branch_2
-#0x1010: (f0 ee)     BEQ  start
+#0x1010: (f0 ee)     BEQ  main
 #0x1012: (4c 1b 10)  JMP  end
 branch_2:
 #0x1015: (a9 00)     LDA  #$00

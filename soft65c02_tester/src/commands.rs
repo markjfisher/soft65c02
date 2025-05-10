@@ -165,6 +165,7 @@ pub enum MemoryCommand {
     LoadSegments { segments: Vec<MemorySegment> },
     LoadSymbols { symbols: SymbolTable },
     AddSymbol { name: String, value: u16 },
+    RemoveSymbol { name: String },
 }
 
 impl Command for MemoryCommand {
@@ -217,6 +218,18 @@ impl Command for MemoryCommand {
                 if let Some(symtable) = symbols {
                     symtable.add_symbol(*value, name.clone());
                     vec![format!("Symbol {} added with value 0x{:04X}", name, value)]
+                } else {
+                    vec!["No symbol table available".to_string()]
+                }
+            }
+            Self::RemoveSymbol { name } => {
+                if let Some(symtable) = symbols {
+                    if let Some(addr) = symtable.get_address(name) {
+                        symtable.remove_symbol(name);
+                        vec![format!("Symbol {} (was 0x{:04X}) removed", name, addr)]
+                    } else {
+                        vec![format!("Symbol {} not found", name)]
+                    }
                 } else {
                     vec!["No symbol table available".to_string()]
                 }

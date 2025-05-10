@@ -320,6 +320,7 @@ impl<'a> MemoryCommandParser<'a> {
             Rule::memory_load => self.handle_memory_load(pair.into_inner())?,
             Rule::symbol_load => self.handle_symbol_load(pair.into_inner())?,
             Rule::symbol_add => self.handle_symbol_add(pair.into_inner())?,
+            Rule::symbol_remove => self.handle_symbol_remove(pair.into_inner())?,
             _ => {
                 panic!("Unexpected pair '{pair:?}'. memory_{{load,flush,write}} expected.");
             }
@@ -482,6 +483,11 @@ impl<'a> MemoryCommandParser<'a> {
             name, 
             value: value as u16 
         })
+    }
+
+    fn handle_symbol_remove(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+        let name = pairs.next().unwrap().as_str().to_string();
+        Ok(MemoryCommand::RemoveSymbol { name })
     }
 }
 
@@ -835,6 +841,38 @@ mod symbol_command_parser_tests {
             command,
             MemoryCommand::AddSymbol { name, value }
             if name == "baz" && value == 0x12
+        ));
+    }
+
+    #[test]
+    fn test_symbol_remove_parser() {
+        let cli_command = CliCommandParser::from("symbols remove foo").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Memory(MemoryCommand::RemoveSymbol { name })
+            if name == "foo"
+        ));
+    }
+
+    #[test]
+    fn test_symbol_remove_with_existing_symbol() {
+        // First create a context with a symbol
+        let mut symbols = SymbolTable::new();
+        symbols.add_symbol(0x1234, "foo".to_string());
+        let context = ParserContext::new(Some(&symbols));
+
+        let input = "symbols remove foo";
+        let pairs = PestParser::parse(Rule::symbols_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(matches!(
+            command,
+            MemoryCommand::RemoveSymbol { name }
+            if name == "foo"
         ));
     }
 }
