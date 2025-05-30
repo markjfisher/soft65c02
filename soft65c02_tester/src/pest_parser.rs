@@ -2,10 +2,8 @@ use std::path::PathBuf;
 use std::env;
 
 use anyhow::anyhow;
-use pest::{
-    iterators::{Pair, Pairs},
-    Parser,
-};
+use pest::iterators::{Pair, Pairs};
+use pest::Parser;
 use pest_derive::Parser;
 
 use crate::{
@@ -19,7 +17,7 @@ use crate::{
 
 #[derive(Parser)]
 #[grammar = "../rules.pest"]
-struct PestParser;
+pub struct PestParser;
 
 pub struct ParserContext<'a> {
     symbols: Option<&'a SymbolTable>,
@@ -406,11 +404,12 @@ impl<'a> MemoryCommandParser<'a> {
             Rule::memory_flush => MemoryCommand::Flush,
             Rule::memory_write => self.handle_memory_write(pair.into_inner())?,
             Rule::memory_load => self.handle_memory_load(pair.into_inner())?,
+            Rule::memory_fill => self.handle_memory_fill(pair.into_inner())?,
             Rule::symbol_load => self.handle_symbol_load(pair.into_inner())?,
             Rule::symbol_add => self.handle_symbol_add(pair.into_inner())?,
             Rule::symbol_remove => self.handle_symbol_remove(pair.into_inner())?,
             _ => {
-                panic!("Unexpected pair '{pair:?}'. memory_{{load,flush,write}} expected.");
+                panic!("Unexpected pair '{pair:?}'. memory_{{load,flush,write,fill}} expected.");
             }
         };
 
@@ -576,6 +575,46 @@ impl<'a> MemoryCommandParser<'a> {
     fn handle_symbol_remove(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
         let name = pairs.next().unwrap().as_str().to_string();
         Ok(MemoryCommand::RemoveSymbol { name })
+    }
+
+    fn handle_memory_fill(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+        let start_node = pairs.next().expect("memory_fill should have a start address");
+        let start = match start_node.as_rule() {
+            Rule::memory_location => {
+                let source = self.context.parse_source_memory(&start_node)?;
+                if let Source::Memory(addr) = source {
+                    addr
+                } else {
+                    panic!("Expected memory location for fill start address");
+                }
+            }
+            _ => panic!("Expected memory_location for fill start address"),
+        };
+
+        let end_node = pairs.next().expect("memory_fill should have an end address");
+        let end = match end_node.as_rule() {
+            Rule::memory_location => {
+                let source = self.context.parse_source_memory(&end_node)?;
+                if let Source::Memory(addr) = source {
+                    addr
+                } else {
+                    panic!("Expected memory location for fill end address");
+                }
+            }
+            _ => panic!("Expected memory_location for fill end address"),
+        };
+
+        // Optional fill value, defaults to 0
+        let value = if let Some(value_node) = pairs.next() {
+            match self.context.parse_source_value(&value_node)? {
+                Source::Value(v) => v as u8,
+                _ => panic!("Expected value for fill"),
+            }
+        } else {
+            0
+        };
+
+        Ok(MemoryCommand::Fill { start, end, value })
     }
 }
 
@@ -848,6 +887,71 @@ mod memory_command_parser_tests {
         assert!(matches!(addr.as_rule(), Rule::memory_address));
         let filename = inner.next().unwrap();
         assert_eq!(filename.as_str(), "\"${BUILD_DIR}/test-file.bin\"");
+    }
+
+    #[test]
+    fn test_memory_fill() {
+        let context = create_test_context();
+        
+        // Test basic fill with value
+        let input = "memory fill #0x1000~#0x1FFF 0x42";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command, MemoryCommand::Fill { start, end, value } 
+                if start == 0x1000 && end == 0x1FFF && value == 0x42)
+        );
+
+        // Test fill without value (should default to 0)
+        let input = "memory fill #0x1000~#0x1FFF";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command, MemoryCommand::Fill { start, end, value } 
+                if start == 0x1000 && end == 0x1FFF && value == 0)
+        );
+
+        // Test fill with symbols and offsets
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "array".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        let input = "memory fill $array + 2 ~ $array + 5 0xFF";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command, MemoryCommand::Fill { start, end, value } 
+                if start == 0x1002 && end == 0x1005 && value == 0xFF)
+        );
+
+        // Test fill with decimal value
+        let input = "memory fill #0x1000~#0x1FFF 42";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command, MemoryCommand::Fill { start, end, value } 
+                if start == 0x1000 && end == 0x1FFF && value == 42)
+        );
     }
 }
 

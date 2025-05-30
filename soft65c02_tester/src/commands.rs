@@ -162,6 +162,7 @@ pub enum MemoryCommand {
     Flush,
     Load { address: usize, filepath: PathBuf },
     Write { address: usize, bytes: Vec<u8> },
+    Fill { start: usize, end: usize, value: u8 },
     LoadSegments { segments: Vec<MemorySegment> },
     LoadSymbols { symbols: SymbolTable },
     AddSymbol { name: String, value: u16 },
@@ -185,6 +186,12 @@ impl Command for MemoryCommand {
                     memory.write(*address, bytes)?;
                     vec![format!("{n} bytes written")]
                 }
+            },
+            Self::Fill { start, end, value } => {
+                let len = end.wrapping_sub(*start).wrapping_add(1);
+                let bytes = vec![*value; len];
+                memory.write(*start, &bytes)?;
+                vec![format!("{} bytes filled with 0x{:02X}", len, value)]
             },
             Self::Load { address, filepath } => {
                 let vec = {
@@ -634,6 +641,61 @@ mod memory_command_tests {
             &[0x34, 0x12],
             memory.read(0x02E0, 2).unwrap().as_slice()
         );
+    }
+
+    #[test]
+    fn test_memory_fill_execution() {
+        let mut memory = Memory::new_with_ram();
+        let mut registers = Registers::new(0);
+        let mut symbols = None;
+
+        // Fill a range with a value
+        let command = MemoryCommand::Fill {
+            start: 0x1000,
+            end: 0x1002,
+            value: 0x42,
+        };
+        let result = command.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        
+        // Check the output message
+        assert!(matches!(result, OutputToken::Setup(msgs) if msgs[0] == "3 bytes filled with 0x42"));
+        
+        // Verify the memory contents
+        assert_eq!(memory.read(0x1000, 1).unwrap()[0], 0x42);
+        assert_eq!(memory.read(0x1001, 1).unwrap()[0], 0x42);
+        assert_eq!(memory.read(0x1002, 1).unwrap()[0], 0x42);
+        
+        // Check that memory outside the range is unaffected
+        assert_eq!(memory.read(0x0FFF, 1).unwrap()[0], 0x00);
+        assert_eq!(memory.read(0x1003, 1).unwrap()[0], 0x00);
+    }
+
+    #[test]
+    fn test_memory_fill_wrapping_execution() {
+        let mut memory = Memory::new_with_ram();
+        let mut registers = Registers::new(0);
+        let mut symbols = None;
+
+        // Fill a range that wraps around memory end
+        let command = MemoryCommand::Fill {
+            start: 0xFFFE,
+            end: 0x0001,
+            value: 0x42,
+        };
+        let result = command.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        
+        // Check the output message (should be 4 bytes: 0xFFFE, 0xFFFF, 0x0000, 0x0001)
+        assert!(matches!(result, OutputToken::Setup(msgs) if msgs[0] == "4 bytes filled with 0x42"));
+        
+        // Verify the memory contents
+        assert_eq!(memory.read(0xFFFE, 1).unwrap()[0], 0x42);
+        assert_eq!(memory.read(0xFFFF, 1).unwrap()[0], 0x42);
+        assert_eq!(memory.read(0x0000, 1).unwrap()[0], 0x42);
+        assert_eq!(memory.read(0x0001, 1).unwrap()[0], 0x42);
+        
+        // Check that memory outside the range is unaffected
+        assert_eq!(memory.read(0xFFFD, 1).unwrap()[0], 0x00);
+        assert_eq!(memory.read(0x0002, 1).unwrap()[0], 0x00);
     }
 }
 

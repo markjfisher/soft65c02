@@ -24,10 +24,11 @@ assignment16 = _{ register16 ~ "=" ~ (value16 | memory_address) }
 assignment_cycle = _{ register_cycle ~ "=" ~ value16 }
 
 memory_instruction = { ^"memory" ~ memory_action }
-memory_action = _{ memory_load | memory_write | memory_flush }
+memory_action = _{ memory_load | memory_write | memory_fill | memory_flush }
 memory_flush = { ^"flush" }
 memory_load = { ^"load" ~ (memory_address | target_name) ~ filename }
 memory_write = { ^"write" ~ memory_address ~ (^"0x(" ~ bytes ~ ")" | string_literal) }
+memory_fill = { ^"fill" ~ memory_location ~ "~" ~ memory_location ~ (value8)? }
 
 target_name = { "atari" | "apple" }
 
