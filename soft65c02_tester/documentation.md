@@ -330,56 +330,47 @@ assert (A = 0x42 AND X < 0x10) OR Y > 0x20   $$complex condition$$
 assert NOT (A = 0x42 AND X = 0x10)           $$negation of a compound condition$$
 ```
 
+#### asserting memory values
+
+You can assert that a memory location contains a specific value:
+```
+assert $counter = 0x42  $$verify counter value$$
+```
+
+Memory locations can include offsets (see [Address Offsets](#address-offsets) section):
+```
+assert $array + 1 = 0x00  $$verify second element is zero$$
+assert $array - 1 = 0xFF  $$verify previous element is 0xFF$$
+```
+
+You can also verify sequences of bytes in memory:
+```
+assert $data ~ 0x(01,02,03)  $$verify three bytes in sequence$$
+```
+
 #### asserting pointers
 
 The `->` operator can be used to verify that a memory location contains a pointer (16-bit address in little-endian format) that points to a specific target address. This is particularly useful for testing indirect addressing and pointer manipulation.
 
 Basic syntax:
 ```
-assert $pointer -> $target           $$verify pointer points to target$$
-assert $pointer -> $target + 0x20    $$verify pointer with positive offset$$
-assert $pointer -> $target - 0x20    $$verify pointer with negative offset$$
+assert $pointer -> $target  $$verify pointer points to target$$
 ```
 
-For example:
+Pointers support the same offset syntax as memory addresses (see [Address Offsets](#address-offsets) section):
 ```
 assert $entry_loc -> $cache + 0x20   $$entry_loc should point to second cache entry$$
 assert $stack_ptr -> $stack_top - 32 $$stack_ptr should point 32 bytes below stack top$$
 ```
 
 This verifies that:
-- The low byte at `$entry_loc` contains the correct low byte of `$cache + 0x20`
-- The high byte at `$entry_loc + 1` contains the correct high byte of `$cache + 0x20`
+1. The low byte at `$entry_loc` contains the correct low byte of the target address
+2. The high byte at `$entry_loc + 1` contains the correct high byte of the target address
 
-The offset can be specified in either hexadecimal or decimal, and can be positive or negative:
+Note that pointer arithmetic wraps around at 16 bits, following 6502 behavior:
 ```
-assert $ptr -> $base + 0x20    $$using hex positive offset$$
-assert $ptr -> $base + 32      $$using decimal positive offset$$
-assert $ptr -> $base - 0x20    $$using hex negative offset$$
-assert $ptr -> $base - 32      $$using decimal negative offset$$
-```
-
-Pointer arithmetic follows 6502 16-bit wrapping behavior in both directions:
-```
-assert $ptr -> $near_end + 0x30   $$if $near_end is 0xFFE0, points to 0x0010$$
-assert $ptr -> $near_start - 0x30 $$if $near_start is 0x0020, points to 0xFFF0$$
-```
-
-Common use cases for negative offsets:
-- Stack pointer manipulation (stack grows downward)
-- Array indexing from the end
-- Circular buffer wraparound
-- Memory-mapped hardware registers relative to a base address
-
-#### asserting sequence of bytes
-
-The keyword `~` can be used to match sequence of bytes for assertions.
-The target can be either the standard list of bytes, or string literals. See below for more information about strings.
-
-For example:
-
-```
-assert #0x1100 ~ 0x(61,62,63,0a,00,64,65,66)
+assert $ptr -> $near_end + 0x30  $$pointer wraps from 0xFFE0 + 0x30 to 0x0010$$
+assert $ptr -> $near_start - 0x30  $$pointer wraps from 0x0020 - 0x30 to 0xFFF0$$
 ```
 
 ### Strings
@@ -431,6 +422,46 @@ registers set A=42              // decimal in register assignment
 run until cycle_count >= 256    // decimal in cycle count comparison
 ```
 
+### Memory and Address Handling
+
+#### Memory Addresses
+
+Memory addresses can be specified in two ways:
+1. Direct hexadecimal addresses: `#0x1234`
+2. Symbol references: `$symbol_name`
+
+#### Address Offsets
+
+Both memory addresses and pointer targets can use offsets for array-like access. Offsets can be:
+- Positive: `address + value`
+- Negative: `address - value`
+- In hexadecimal: `+ 0xFF` or `- 0x10`
+- In decimal: `+ 42` or `- 32`
+
+The offset arithmetic follows 6502 behavior, wrapping around at 16 bits (64K boundary).
+
+Examples:
+```
+// Memory access with offsets
+assert $array + 1 = 0x00      $$verify second element is zero$$
+assert $array - 1 = 0xFF      $$verify previous element is 0xFF$$
+memory write $array + 0x10 0x(42)  $$write to array with offset$$
+
+// Memory sequences with offsets
+assert $data + 2 ~ 0x(04,05)  $$verify bytes with positive offset$$
+assert $data - 2 ~ 0x(FF,FE)  $$verify bytes with negative offset$$
+
+// Pointer assertions with offsets
+assert $ptr -> $base + 0x20   $$verify pointer with positive offset$$
+assert $ptr -> $base - 32     $$verify pointer with negative offset$$
+```
+
+Note that all address arithmetic wraps at 64K. For example:
+```
+assert $0xFFFF + 2 = 0x42     $$0xFFFF + 2 wraps to 0x0001$$
+assert $0x0000 - 1 = 0x42     $$0x0000 - 1 wraps to 0xFFFF$$
+assert $ptr -> #0xFFFF + 0x10 $$pointer wraps from 0xFFFF + 0x10 to 0x000F$$
+```
 
 ## Examples
 

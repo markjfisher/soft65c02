@@ -99,6 +99,117 @@ impl<'a> ParserContext<'a> {
         }
     }
 
+    fn parse_source_memory(&self, node: &Pair<Rule>) -> AppResult<Source> {
+        match node.as_rule() {
+            Rule::memory_location => {
+                let mut nodes = node.clone().into_inner();
+                let addr_node = nodes.next().expect("memory_location should have a memory_address");
+                let mut addr = self.parse_memory(&addr_node)?;
+                
+                // Check for optional offset
+                if let Some(offset_node) = nodes.next() {
+                    let mut offset_nodes = offset_node.into_inner();
+                    let op_node = offset_nodes.next().unwrap();
+                    let value_node = offset_nodes.next().unwrap();
+                    
+                    let offset = match value_node.as_rule() {
+                        Rule::value8 | Rule::value16 => self.parse_source_value(&value_node)?,
+                        _ => panic!("Unexpected offset type: {:?}", value_node.as_rule()),
+                    };
+                    
+                    if let Source::Value(offset_val) = offset {
+                        addr = match op_node.as_rule() {
+                            Rule::plus_op => (addr.wrapping_add(offset_val)) & 0xFFFF,  // Mask to 16-bit
+                            Rule::minus_op => (addr.wrapping_sub(offset_val)) & 0xFFFF, // Mask to 16-bit
+                            _ => panic!("Unexpected operator type: {:?}", op_node.as_rule()),
+                        };
+                    }
+                }
+                
+                Ok(Source::Memory(addr))
+            },
+            _ => panic!("Expected memory_location, got {:?}", node.as_rule()),
+        }
+    }
+
+    fn parse_source_value(&self, node: &Pair<Rule>) -> AppResult<Source> {
+        let value_str = node.as_str();
+        let value = if value_str.starts_with("0x") {
+            // Parse hex value
+            self.parse_hex(&value_str[2..])?
+        } else if value_str.starts_with("0b") {
+            // Parse binary value
+            usize::from_str_radix(&value_str[2..], 2)
+                .map_err(|e| anyhow!("Failed to parse binary value '{}': {}", value_str, e))?
+        } else {
+            // Parse decimal value
+            value_str.parse::<usize>()
+                .map_err(|e| anyhow!("Failed to parse decimal value '{}': {}", value_str, e))?
+        };
+        
+        // Validate the value size matches the rule type
+        match node.as_rule() {
+            Rule::value8 => {
+                if value > 0xFF {
+                    return Err(anyhow!("Value {} is too large for 8-bit value", value));
+                }
+            }
+            Rule::value16 => {
+                if value > 0xFFFF {
+                    return Err(anyhow!("Value {} is too large for 16-bit value", value));
+                }
+            }
+            _ => panic!("Unexpected rule in parse_source_value: {:?}", node.as_rule()),
+        }
+        
+        Ok(Source::Value(value))
+    }
+
+    fn parse_string_literal(&self, str_content: &str) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut chars = str_content.chars();
+        
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    match chars.next().expect("escape sequence should have a character after \\") {
+                        'n' => bytes.push(b'\n'),
+                        'r' => bytes.push(b'\r'),
+                        't' => bytes.push(b'\t'),
+                        '0' => bytes.push(0),
+                        '"' => bytes.push(b'"'),
+                        '\\' => bytes.push(b'\\'),
+                        c => panic!("unknown escape sequence '\\{}'", c),
+                    }
+                }
+                c => bytes.push(c as u8),
+            }
+        }
+        bytes
+    }
+
+    fn parse_memory_sequence(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
+        let mut seq_nodes = node.into_inner();
+        let addr_node = seq_nodes.next().expect("memory_sequence should have a memory_location node");
+        let addr = self.parse_source_memory(&addr_node)?;
+        
+        let sequence_node = seq_nodes.next().expect("memory_sequence should have a bytes_list or string_literal node");
+        let bytes = match sequence_node.as_rule() {
+            Rule::bytes_list => {
+                let bytes_node = sequence_node.into_inner().next().expect("bytes_list should contain a bytes node");
+                self.parse_hex_sequence(bytes_node.as_str())?
+            }
+            Rule::string_literal => {
+                // Remove the quotes
+                let str_content = &sequence_node.as_str()[1..sequence_node.as_str().len()-1];
+                self.parse_string_literal(str_content)
+            }
+            _ => panic!("Expected bytes_list or string_literal in memory_sequence")
+        };
+        
+        Ok(BooleanExpression::MemorySequence(addr, bytes))
+    }
+
     pub fn parse_boolean_condition(&self, nodes: Pairs<Rule>) -> AppResult<BooleanExpression> {
         let mut nodes = nodes.peekable();
         
@@ -223,7 +334,7 @@ impl<'a> ParserContext<'a> {
         let lh_node = nodes.next().unwrap();
         let lh = match lh_node.as_rule() {
             Rule::register8 | Rule::register16 | Rule::register_cycle => self.parse_source_register(&lh_node),
-            Rule::memory_address => self.parse_source_memory(&lh_node)?,
+            Rule::memory_location => self.parse_source_memory(&lh_node)?,
             Rule::value8 | Rule::value16 => self.parse_source_value(&lh_node)?,
             v => panic!("unexpected node '{:?}' in comparison", v),
         };
@@ -232,7 +343,7 @@ impl<'a> ParserContext<'a> {
         let rh_node = nodes.next().unwrap();
         let rh = match rh_node.as_rule() {
             Rule::register8 | Rule::register16 | Rule::register_cycle => self.parse_source_register(&rh_node),
-            Rule::memory_address => self.parse_source_memory(&rh_node)?,
+            Rule::memory_location => self.parse_source_memory(&rh_node)?,
             Rule::value8 | Rule::value16 => self.parse_source_value(&rh_node)?,
             Rule::symbol_reference => {
                 let symbol_name = &rh_node.as_str()[1..]; // Skip the "$" prefix
@@ -271,88 +382,6 @@ impl<'a> ParserContext<'a> {
             "cycle_count" => Source::Register(RegisterSource::CycleCount),
             v => panic!("unknown register type '{:?}'.", v),
         }
-    }
-
-    fn parse_source_memory(&self, node: &Pair<Rule>) -> AppResult<Source> {
-        Ok(Source::Memory(self.parse_memory(node)?))
-    }
-
-    fn parse_source_value(&self, node: &Pair<Rule>) -> AppResult<Source> {
-        let value_str = node.as_str();
-        let value = if value_str.starts_with("0x") {
-            // Parse hex value
-            self.parse_hex(&value_str[2..])?
-        } else if value_str.starts_with("0b") {
-            // Parse binary value
-            usize::from_str_radix(&value_str[2..], 2)
-                .map_err(|e| anyhow!("Failed to parse binary value '{}': {}", value_str, e))?
-        } else {
-            // Parse decimal value
-            value_str.parse::<usize>()
-                .map_err(|e| anyhow!("Failed to parse decimal value '{}': {}", value_str, e))?
-        };
-        
-        // Validate the value size matches the rule type
-        match node.as_rule() {
-            Rule::value8 => {
-                if value > 0xFF {
-                    return Err(anyhow!("Value {} is too large for 8-bit value", value));
-                }
-            }
-            Rule::value16 => {
-                if value > 0xFFFF {
-                    return Err(anyhow!("Value {} is too large for 16-bit value", value));
-                }
-            }
-            _ => panic!("Unexpected rule in parse_source_value: {:?}", node.as_rule()),
-        }
-        
-        Ok(Source::Value(value))
-    }
-
-    fn parse_string_literal(&self, str_content: &str) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        let mut chars = str_content.chars();
-        
-        while let Some(c) = chars.next() {
-            match c {
-                '\\' => {
-                    match chars.next().expect("escape sequence should have a character after \\") {
-                        'n' => bytes.push(b'\n'),
-                        'r' => bytes.push(b'\r'),
-                        't' => bytes.push(b'\t'),
-                        '0' => bytes.push(0),
-                        '"' => bytes.push(b'"'),
-                        '\\' => bytes.push(b'\\'),
-                        c => panic!("unknown escape sequence '\\{}'", c),
-                    }
-                }
-                c => bytes.push(c as u8),
-            }
-        }
-        bytes
-    }
-
-    fn parse_memory_sequence(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
-        let mut seq_nodes = node.into_inner();
-        let addr_node = seq_nodes.next().expect("memory_sequence should have a memory_address node");
-        let addr = self.parse_source_memory(&addr_node)?;
-        
-        let sequence_node = seq_nodes.next().expect("memory_sequence should have a bytes_list or string_literal node");
-        let bytes = match sequence_node.as_rule() {
-            Rule::bytes_list => {
-                let bytes_node = sequence_node.into_inner().next().expect("bytes_list should contain a bytes node");
-                self.parse_hex_sequence(bytes_node.as_str())?
-            }
-            Rule::string_literal => {
-                // Remove the quotes
-                let str_content = &sequence_node.as_str()[1..sequence_node.as_str().len()-1];
-                self.parse_string_literal(str_content)
-            }
-            _ => panic!("Expected bytes_list or string_literal in memory_sequence")
-        };
-        
-        Ok(BooleanExpression::MemorySequence(addr, bytes))
     }
 }
 
@@ -1775,21 +1804,12 @@ impl<'a> AssertCommandParser<'a> {
         Ok(command)
     }
 
-    // Helper methods used by parse_pointer_assertion
-    fn parse_memory(&self, pair: &Pair<Rule>) -> AppResult<usize> {
-        self.context.parse_memory(pair)
-    }
-
-    fn parse_source_value(&self, node: &Pair<Rule>) -> AppResult<Source> {
-        self.context.parse_source_value(node)
-    }
-
     fn parse_pointer_assertion(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
         let mut nodes = node.into_inner();
         
         // Get the pointer location (memory address where the pointer is stored)
         let pointer_loc = nodes.next().expect("pointer_assertion should have a memory address");
-        let pointer_addr = self.parse_memory(&pointer_loc)?;
+        let pointer_addr = self.context.parse_memory(&pointer_loc)?;
 
         // Skip the "points" and "to" tokens by getting the pointer_target
         let target_node = nodes.next().expect("pointer_assertion should have a pointer_target");
@@ -1797,7 +1817,7 @@ impl<'a> AssertCommandParser<'a> {
         
         // Get the base target address
         let target_addr_node = target_nodes.next().expect("pointer_target should have a memory address");
-        let mut target_addr = self.parse_memory(&target_addr_node)?;
+        let mut target_addr = self.context.parse_memory(&target_addr_node)?;
 
         // Check for optional offset
         if let Some(offset_node) = target_nodes.next() {
@@ -1806,7 +1826,7 @@ impl<'a> AssertCommandParser<'a> {
             let value_node = offset_nodes.next().unwrap();
             
             let offset = match value_node.as_rule() {
-                Rule::value8 | Rule::value16 => self.parse_source_value(&value_node)?,
+                Rule::value8 | Rule::value16 => self.context.parse_source_value(&value_node)?,
                 _ => panic!("Unexpected offset type: {:?}", value_node.as_rule()),
             };
             
@@ -1844,7 +1864,7 @@ impl<'a> AssertCommandParser<'a> {
 
     fn parse_memory_sequence(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
         let mut seq_nodes = node.into_inner();
-        let addr_node = seq_nodes.next().expect("memory_sequence should have a memory_address node");
+        let addr_node = seq_nodes.next().expect("memory_sequence should have a memory_location node");
         let addr = self.context.parse_source_memory(&addr_node)?;
         
         let sequence_node = seq_nodes.next().expect("memory_sequence should have a bytes_list or string_literal node");
@@ -2256,6 +2276,136 @@ mod assert_parser_tests {
             }
         } else {
             panic!("Expected And expression at top level");
+        }
+    }
+
+    #[test]
+    fn test_assert_with_memory_offset() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x2000, "cache".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test positive offset with comparison
+        let input = "assert $cache + 1 = 0x00 $$test memory offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "test memory offset");
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::Equal(
+                    Source::Memory(addr),
+                    Source::Value(0x00)
+                ) if addr == 0x2001
+            )
+        );
+
+        // Test negative offset with comparison
+        let input = "assert $cache - 1 = 0x42 $$test negative memory offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::Equal(
+                    Source::Memory(addr),
+                    Source::Value(0x42)
+                ) if addr == 0x1FFF
+            )
+        );
+    }
+
+    #[test]
+    fn test_assert_memory_sequence_with_offset() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x2000, "cache".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test memory sequence with positive offset
+        let input = "assert $cache + 2 ~ 0x(00,40) $$test sequence with offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "test sequence with offset");
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x2002 && bytes == vec![0x00, 0x40]
+            )
+        );
+
+        // Test memory sequence with decimal offset
+        let input = "assert $cache + 128 ~ 0x(00,40) $$test sequence with decimal offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x2080 && bytes == vec![0x00, 0x40]
+            )
+        );
+    }
+
+    #[test]
+    fn test_memory_offset_wrapping() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0xFFFF, "end".to_string());
+        symbols.add_symbol(0x0000, "start".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test wrapping with positive offset
+        let input = "assert $end + 2 = 0x42 $$test wrapping with positive offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // 0xFFFF + 2 should wrap around to 0x0001
+        if let BooleanExpression::Equal(Source::Memory(addr), Source::Value(val)) = command.condition {
+            assert_eq!(addr, 0x0001, "Expected wrapped address 0x0001, got 0x{:04X}", addr);
+            assert_eq!(val, 0x42, "Expected value 0x42, got 0x{:02X}", val);
+        } else {
+            panic!("Expected Equal expression, got {:?}", command.condition);
+        }
+
+        // Test wrapping with negative offset
+        let input = "assert $start - 2 = 0x42 $$test wrapping with negative offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // 0x0000 - 2 should wrap around to 0xFFFE
+        if let BooleanExpression::Equal(Source::Memory(addr), Source::Value(val)) = command.condition {
+            assert_eq!(addr, 0xFFFE, "Expected wrapped address 0xFFFE, got 0x{:04X}", addr);
+            assert_eq!(val, 0x42, "Expected value 0x42, got 0x{:02X}", val);
+        } else {
+            panic!("Expected Equal expression, got {:?}", command.condition);
         }
     }
 }

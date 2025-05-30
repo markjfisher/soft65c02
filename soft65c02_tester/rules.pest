@@ -58,15 +58,19 @@ comparison = { comparison16 | comparison8 | comparison_cycle }
 comparison16 = _{ location16 ~ standard_operator ~ (value16 | symbol_reference) }
 comparison8 = _{ location8 ~ standard_operator ~ (value8 | symbol_reference) }
 comparison_cycle = _{ location_cycle ~ standard_operator ~ value16 }
-memory_sequence = { memory_address ~ "~" ~ (bytes_list | string_literal) }
+
+// Memory sequence and offset rules
+memory_sequence = { memory_location ~ "~" ~ (bytes_list | string_literal) }
+memory_location = { memory_address ~ (address_offset)? }
+memory_address = { hex_address | symbol_reference }
+
 string_literal = { "\"" ~ string_char* ~ "\"" }
 string_char = { !("\"" | "\\") ~ ASCII | "\\" ~ ("\"" | "\\" | "n" | "r" | "t" | "0") }
 
 location16 = _{ register16 }
-location8 = _{ memory_address | register8 }
+location8 = _{ memory_location | register8 }
 location_cycle = _{ register_cycle }
 
-memory_address = { hex_address | symbol_reference }
 hex_address = @{ "#0x" ~ ASCII_HEX_DIGIT{1,4} }
 hex_length = @{ "0x" ~ ASCII_HEX_DIGIT{1,4} }
 symbol_reference = { "$" ~ symbol_name }
@@ -96,7 +100,9 @@ disassemble_instruction = { ^"disassemble" ~ memory_address ~ hex_length }
 
 // Add new rules for pointer assertions
 pointer_assertion = { memory_address ~ "->" ~ pointer_target }
-pointer_target = { memory_address ~ (pointer_offset)? }
-pointer_offset = { (plus_op | minus_op) ~ (value16 | value8) }
+pointer_target = { memory_address ~ (address_offset)? }
+
+// Common offset rule used by both memory and pointer operations
+address_offset = { (plus_op | minus_op) ~ (value16 | value8) }
 plus_op = { "+" }
 minus_op = { "-" }
