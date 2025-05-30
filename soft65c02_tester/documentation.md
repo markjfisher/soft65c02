@@ -70,6 +70,33 @@ Combined with symbols, you can write memory to named addresses with following:
 memory write $main "hello, world\0"
 ```
 
+#### memory fill
+
+The `memory fill` command allows filling a range of memory with a specific value.
+
+Basic syntax:
+```
+memory fill #0x1000~#0x1FFF 0x42    $$fill range with 0x42$$
+memory fill $array~$array+0xFF 0x00  $$clear array of 256 bytes$$
+```
+
+The range is specified using start and end addresses separated by `~`. Both addresses support the standard address syntax including symbols and offsets. The fill value is optional - if omitted, the range is cleared (filled with 0x00):
+
+```
+// These are equivalent
+memory fill #0x1000~#0x1FFF          $$clear range (fill with 0x00)$$
+memory fill #0x1000~#0x1FFF 0x00     $$explicitly fill with 0x00$$
+
+// Using symbols and offsets
+memory fill $data~$data+0xFF         $$clear 256 bytes starting at $data$$
+memory fill $array+2~$array+5 0xFF   $$fill elements 2-5 with 0xFF$$
+```
+
+Note that like all address operations, ranges wrap at the 64K boundary. For example:
+```
+memory fill #0xFFFF~#0x0002 0x42     $$fills 0xFFFF, 0x0000, 0x0001, 0x0002$$
+```
+
 ### registers
 
 The `registers` instructions are used to set the registers in a known state prior to testing.
