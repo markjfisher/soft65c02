@@ -330,6 +330,47 @@ assert (A = 0x42 AND X < 0x10) OR Y > 0x20   $$complex condition$$
 assert NOT (A = 0x42 AND X = 0x10)           $$negation of a compound condition$$
 ```
 
+#### asserting pointers
+
+The `->` operator can be used to verify that a memory location contains a pointer (16-bit address in little-endian format) that points to a specific target address. This is particularly useful for testing indirect addressing and pointer manipulation.
+
+Basic syntax:
+```
+assert $pointer -> $target           $$verify pointer points to target$$
+assert $pointer -> $target + 0x20    $$verify pointer with positive offset$$
+assert $pointer -> $target - 0x20    $$verify pointer with negative offset$$
+```
+
+For example:
+```
+assert $entry_loc -> $cache + 0x20   $$entry_loc should point to second cache entry$$
+assert $stack_ptr -> $stack_top - 32 $$stack_ptr should point 32 bytes below stack top$$
+```
+
+This verifies that:
+- The low byte at `$entry_loc` contains the correct low byte of `$cache + 0x20`
+- The high byte at `$entry_loc + 1` contains the correct high byte of `$cache + 0x20`
+
+The offset can be specified in either hexadecimal or decimal, and can be positive or negative:
+```
+assert $ptr -> $base + 0x20    $$using hex positive offset$$
+assert $ptr -> $base + 32      $$using decimal positive offset$$
+assert $ptr -> $base - 0x20    $$using hex negative offset$$
+assert $ptr -> $base - 32      $$using decimal negative offset$$
+```
+
+Pointer arithmetic follows 6502 16-bit wrapping behavior in both directions:
+```
+assert $ptr -> $near_end + 0x30   $$if $near_end is 0xFFE0, points to 0x0010$$
+assert $ptr -> $near_start - 0x30 $$if $near_start is 0x0020, points to 0xFFF0$$
+```
+
+Common use cases for negative offsets:
+- Stack pointer manipulation (stack grows downward)
+- Array indexing from the end
+- Circular buffer wraparound
+- Memory-mapped hardware registers relative to a base address
+
 #### asserting sequence of bytes
 
 The keyword `~` can be used to match sequence of bytes for assertions.

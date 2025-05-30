@@ -151,6 +151,7 @@ impl<'a> ParserContext<'a> {
             Rule::comparison => self.parse_comparison(first.into_inner()),
             Rule::boolean_condition => self.parse_boolean_condition(first.into_inner()),
             Rule::memory_sequence => self.parse_memory_sequence(first),
+            Rule::pointer_assertion => self.parse_pointer_assertion(first),
             Rule::boolean => Ok(BooleanExpression::Value(first.as_str() == "true")),
             Rule::NOT_OP => {
                 let factor = inner.next().expect("NOT operator should be followed by a factor");
@@ -158,6 +159,64 @@ impl<'a> ParserContext<'a> {
             },
             _ => panic!("unknown node type '{:?}'. Is the Pest grammar up to date?", first.as_rule()),
         }
+    }
+
+    fn parse_pointer_assertion(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
+        let mut nodes = node.into_inner();
+        
+        // Get the pointer location (memory address where the pointer is stored)
+        let pointer_loc = nodes.next().expect("pointer_assertion should have a memory address");
+        let pointer_addr = self.parse_memory(&pointer_loc)?;
+
+        // Skip the "points" and "to" tokens by getting the pointer_target
+        let target_node = nodes.next().expect("pointer_assertion should have a pointer_target");
+        let mut target_nodes = target_node.into_inner();
+        
+        // Get the base target address
+        let target_addr_node = target_nodes.next().expect("pointer_target should have a memory address");
+        let mut target_addr = self.parse_memory(&target_addr_node)?;
+
+        // Check for optional offset
+        if let Some(offset_node) = target_nodes.next() {
+            let mut offset_nodes = offset_node.into_inner();
+            let op_node = offset_nodes.next().unwrap();
+            let value_node = offset_nodes.next().unwrap();
+            
+            let offset = match value_node.as_rule() {
+                Rule::value8 | Rule::value16 => self.parse_source_value(&value_node)?,
+                _ => panic!("Unexpected offset type: {:?}", value_node.as_rule()),
+            };
+            
+            if let Source::Value(offset_val) = offset {
+                target_addr = match op_node.as_rule() {
+                    Rule::plus_op => target_addr.wrapping_add(offset_val),
+                    Rule::minus_op => target_addr.wrapping_sub(offset_val),
+                    _ => panic!("Unexpected operator type: {:?}", op_node.as_rule()),
+                };
+            }
+        }
+
+        // For 6502, pointers are stored in little-endian format
+        // So we need to check that pointer_addr contains the low byte
+        // and pointer_addr + 1 contains the high byte
+        let low_byte = target_addr & 0xFF;
+        let high_byte = (target_addr >> 8) & 0xFF;
+
+        // Create a boolean expression that checks both bytes
+        let low_check = BooleanExpression::Equal(
+            Source::Memory(pointer_addr),
+            Source::Value(low_byte)
+        );
+        let high_check = BooleanExpression::Equal(
+            Source::Memory(pointer_addr.wrapping_add(1)),
+            Source::Value(high_byte)
+        );
+
+        // Combine the checks with AND
+        Ok(BooleanExpression::And(
+            Box::new(low_check),
+            Box::new(high_check)
+        ))
     }
 
     fn parse_comparison(&self, mut nodes: Pairs<Rule>) -> AppResult<BooleanExpression> {
@@ -1703,6 +1762,7 @@ impl<'a> AssertCommandParser<'a> {
                 let first = boolean_condition.into_inner().next().unwrap();
                 match first.as_rule() {
                     Rule::memory_sequence => self.parse_memory_sequence(first)?,
+                    Rule::pointer_assertion => self.parse_pointer_assertion(first)?,
                     _ => self.context.parse_boolean_condition(Pairs::single(first))?,
                 }
             }
@@ -1713,6 +1773,73 @@ impl<'a> AssertCommandParser<'a> {
         let command = AssertCommand { comment, condition };
 
         Ok(command)
+    }
+
+    // Helper methods used by parse_pointer_assertion
+    fn parse_memory(&self, pair: &Pair<Rule>) -> AppResult<usize> {
+        self.context.parse_memory(pair)
+    }
+
+    fn parse_source_value(&self, node: &Pair<Rule>) -> AppResult<Source> {
+        self.context.parse_source_value(node)
+    }
+
+    fn parse_pointer_assertion(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
+        let mut nodes = node.into_inner();
+        
+        // Get the pointer location (memory address where the pointer is stored)
+        let pointer_loc = nodes.next().expect("pointer_assertion should have a memory address");
+        let pointer_addr = self.parse_memory(&pointer_loc)?;
+
+        // Skip the "points" and "to" tokens by getting the pointer_target
+        let target_node = nodes.next().expect("pointer_assertion should have a pointer_target");
+        let mut target_nodes = target_node.into_inner();
+        
+        // Get the base target address
+        let target_addr_node = target_nodes.next().expect("pointer_target should have a memory address");
+        let mut target_addr = self.parse_memory(&target_addr_node)?;
+
+        // Check for optional offset
+        if let Some(offset_node) = target_nodes.next() {
+            let mut offset_nodes = offset_node.into_inner();
+            let op_node = offset_nodes.next().unwrap();
+            let value_node = offset_nodes.next().unwrap();
+            
+            let offset = match value_node.as_rule() {
+                Rule::value8 | Rule::value16 => self.parse_source_value(&value_node)?,
+                _ => panic!("Unexpected offset type: {:?}", value_node.as_rule()),
+            };
+            
+            if let Source::Value(offset_val) = offset {
+                target_addr = match op_node.as_rule() {
+                    Rule::plus_op => target_addr.wrapping_add(offset_val),
+                    Rule::minus_op => target_addr.wrapping_sub(offset_val),
+                    _ => panic!("Unexpected operator type: {:?}", op_node.as_rule()),
+                };
+            }
+        }
+
+        // For 6502, pointers are stored in little-endian format
+        // So we need to check that pointer_addr contains the low byte
+        // and pointer_addr + 1 contains the high byte
+        let low_byte = target_addr & 0xFF;
+        let high_byte = (target_addr >> 8) & 0xFF;
+
+        // Create a boolean expression that checks both bytes
+        let low_check = BooleanExpression::Equal(
+            Source::Memory(pointer_addr),
+            Source::Value(low_byte)
+        );
+        let high_check = BooleanExpression::Equal(
+            Source::Memory(pointer_addr.wrapping_add(1)),
+            Source::Value(high_byte)
+        );
+
+        // Combine the checks with AND
+        Ok(BooleanExpression::And(
+            Box::new(low_check),
+            Box::new(high_check)
+        ))
     }
 
     fn parse_memory_sequence(&self, node: Pair<Rule>) -> AppResult<BooleanExpression> {
@@ -1864,6 +1991,272 @@ mod assert_parser_tests {
                 ) if addr == 0x8000 && bytes == b"hello".to_vec()
             )
         );
+    }
+
+    #[test]
+    fn test_pointer_assertion() {
+        // Create context with necessary symbols
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "entry_loc".to_string());
+        symbols.add_symbol(0x2000, "cache".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test basic pointer assertion
+        let input = "assert $entry_loc -> $cache $$basic pointer test$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "basic pointer test");
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0x00);  // Low byte of 0x2000
+                    assert_eq!(high_val, 0x20); // High byte of 0x2000
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
+        
+        // Test pointer assertion with offset
+        let input = "assert $entry_loc -> $cache + 0x20 $$pointer with offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "pointer with offset");
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0x20);  // Low byte of 0x2020
+                    assert_eq!(high_val, 0x20); // High byte of 0x2020
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
+        
+        // Test pointer assertion with decimal offset
+        let input = "assert $entry_loc -> $cache + 32 $$pointer with decimal offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "pointer with decimal offset");
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0x20);  // Low byte of 0x2020 (32 = 0x20)
+                    assert_eq!(high_val, 0x20); // High byte of 0x2020
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
+    }
+
+    #[test]
+    fn test_pointer_assertion_with_symbols() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "entry_loc".to_string());
+        symbols.add_symbol(0x2000, "cache".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        let input = "assert $entry_loc -> $cache + 0x20 $$pointer test with symbols$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // The pointer at $entry_loc (0x1000) should point to $cache (0x2000) + 0x20 = 0x2020
+        // So memory[0x1000] should contain 0x20 (low byte)
+        // and memory[0x1001] should contain 0x20 (high byte)
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0x20);  // Low byte of 0x2020
+                    assert_eq!(high_val, 0x20); // High byte of 0x2020
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
+    }
+
+    #[test]
+    fn test_pointer_assertion_wrapping() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "ptr".to_string());
+        symbols.add_symbol(0xFFE0, "near_end".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test wrapping behavior when adding offset
+        let input = "assert $ptr -> $near_end + 0x30 $$pointer should wrap$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // 0xFFE0 + 0x30 = 0x10 (after wrapping)
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0x10);  // Low byte after wrapping
+                    assert_eq!(high_val, 0x00); // High byte after wrapping
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
+    }
+
+    #[test]
+    fn test_pointer_assertion_with_negative_offset() {
+        // Create context with necessary symbols
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "ptr".to_string());
+        symbols.add_symbol(0x2000, "base".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test negative offset
+        let input = "assert $ptr -> $base - 0x20 $$pointer with negative offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "pointer with negative offset");
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0xE0);  // Low byte of 0x1FE0 (0x2000 - 0x20)
+                    assert_eq!(high_val, 0x1F); // High byte of 0x1FE0
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
+    }
+
+    #[test]
+    fn test_pointer_assertion_wrapping_with_negative_offset() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "ptr".to_string());
+        symbols.add_symbol(0x0020, "near_start".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test wrapping behavior when subtracting offset
+        let input = "assert $ptr -> $near_start - 0x30 $$pointer should wrap$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        // 0x0020 - 0x30 = 0xFFF0 (after wrapping)
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0xF0);  // Low byte after wrapping
+                    assert_eq!(high_val, 0xFF); // High byte after wrapping
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
+    }
+
+    #[test]
+    fn test_pointer_assertion_with_decimal_negative_offset() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "ptr".to_string());
+        symbols.add_symbol(0x2000, "base".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test negative decimal offset
+        let input = "assert $ptr -> $base - 32 $$pointer with decimal negative offset$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        if let BooleanExpression::And(low_check, high_check) = command.condition {
+            match (*low_check, *high_check) {
+                (
+                    BooleanExpression::Equal(Source::Memory(low_addr), Source::Value(low_val)),
+                    BooleanExpression::Equal(Source::Memory(high_addr), Source::Value(high_val))
+                ) => {
+                    assert_eq!(low_addr, 0x1000);
+                    assert_eq!(high_addr, 0x1001);
+                    assert_eq!(low_val, 0xE0);  // Low byte of 0x1FE0 (0x2000 - 32)
+                    assert_eq!(high_val, 0x1F); // High byte of 0x1FE0
+                },
+                _ => panic!("Unexpected boolean expression structure"),
+            }
+        } else {
+            panic!("Expected And expression at top level");
+        }
     }
 }
 

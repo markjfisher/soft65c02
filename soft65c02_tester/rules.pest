@@ -44,6 +44,7 @@ boolean_factor = {
     boolean |
     memory_sequence |
     comparison |
+    pointer_assertion |
     "(" ~ boolean_condition ~ ")" |
     NOT_OP ~ boolean_factor
 }
@@ -92,3 +93,10 @@ symbol_add_value = { value16 | value8 | symbol_reference }
 symbol_remove = { "remove" ~ symbol_name }
 
 disassemble_instruction = { ^"disassemble" ~ memory_address ~ hex_length }
+
+// Add new rules for pointer assertions
+pointer_assertion = { memory_address ~ "->" ~ pointer_target }
+pointer_target = { memory_address ~ (pointer_offset)? }
+pointer_offset = { (plus_op | minus_op) ~ (value16 | value8) }
+plus_op = { "+" }
+minus_op = { "-" }
