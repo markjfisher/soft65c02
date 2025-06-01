@@ -49,16 +49,23 @@ impl Executor for CommandExecutor {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        // Always show command output
+        // Always show stdout
         if !stdout.is_empty() {
             print!("{}", stdout);
         }
-        if !stderr.is_empty() {
+
+        let error_msg = stderr.trim();
+        if !error_msg.starts_with("Error:") {
             eprint!("{}", stderr);
         }
 
         if !output.status.success() {
-            Err(stderr.into_owned())
+            // If stderr starts with "Error:", just return that message without wrapping
+            if error_msg.starts_with("Error:") {
+                Err(error_msg[6..].trim().to_string())
+            } else {
+                Err(stderr.into_owned())
+            }
         } else {
             Ok(())
         }

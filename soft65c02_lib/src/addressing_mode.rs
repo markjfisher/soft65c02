@@ -43,7 +43,7 @@ impl std::convert::From<memory::MemoryError> for ResolutionError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AddressingModeResolution {
     pub operands: Vec<u8>,
     pub addressing_mode: AddressingMode,

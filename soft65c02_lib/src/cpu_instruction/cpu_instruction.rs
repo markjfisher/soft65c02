@@ -148,7 +148,7 @@ impl RegisterState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LogLine {
     pub address: usize,
     pub opcode: u8,

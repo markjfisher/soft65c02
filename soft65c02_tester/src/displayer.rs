@@ -212,7 +212,7 @@ where
         let mut i: u32 = 0;
 
         while let Ok(token) = receiver.recv() {
-            match token {
+            match &token {
                 OutputToken::Assertion {
                     failure,
                     description,
@@ -233,7 +233,7 @@ where
                     self.output
                         .write_all(format!("📄 {description}\n").as_bytes())?;
                 }
-                OutputToken::Run { loglines, symbols } if self.verbose => {
+                OutputToken::Run { loglines, symbols } | OutputToken::TerminatedRun { loglines, symbols, .. } if self.verbose => {
                     let mut content = String::new();
                     let show_total = loglines.len() > 1;
                     let total_cycles: u32 = if show_total {
@@ -249,6 +249,10 @@ where
 
                     if show_total {
                         content.push_str(&format!("🕒 Total cycles: {}\n", total_cycles));
+                    }
+
+                    if let OutputToken::TerminatedRun { reason, .. } = &token {
+                        content.push_str(&format!("⛔ Run terminated: {}\n", reason));
                     }
                     
                     self.output.write_all(content.as_bytes())?;
@@ -395,5 +399,187 @@ mod tests {
         let output = String::from_utf8(buffer).unwrap();
         assert!(output.contains("COLOR4"), "Symbol substitution not found in output");
         assert_eq!(output, "🚀 #0x2027: (8d c8 02)  STA  COLOR4          (#0x02C8) 42|00|00|FF|nv-Bdizc[4]\n");
+    }
+
+    #[test]
+    fn test_terminated_run_single_instruction() {
+        let mut buffer = Vec::new();
+        let mut displayer = CliDisplayer::new(&mut buffer, true);
+        let (sender, receiver) = channel();
+
+        // Create a simple log line
+        let log_line = LogLine {
+            address: 0x2000,
+            opcode: 0xa9,
+            mnemonic: "LDA".to_string(),
+            resolution: AddressingModeResolution {
+                target_address: None,
+                operands: vec![0x42],
+                addressing_mode: AddressingMode::Immediate([0x42]),
+            },
+            outcome: "(0x42)".to_string(),
+            cycles: 2,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2002,
+            },
+        };
+
+        // Send a TerminatedRun token
+        sender.send(OutputToken::TerminatedRun { 
+            loglines: vec![log_line], 
+            symbols: None,
+            reason: "Cycle count limit exceeded".to_string(),
+        }).unwrap();
+        drop(sender);
+        
+        displayer.display(receiver).unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        let expected_instruction = "#0x2000: (a9 42)     LDA  #$42                      42|00|00|FF|nv-Bdizc[2]";
+        // Should show the instruction
+        assert!(output.contains(expected_instruction), 
+            "Missing instruction trace.\nExpected to find '{}'\nActual output:\n{}", 
+            expected_instruction, output);
+        // Should show the termination reason
+        assert!(output.contains("⛔ Run terminated: Cycle count limit exceeded"), "Missing termination reason");
+        // Should not show total cycles for single instruction
+        assert!(!output.contains("Total cycles:"), "Should not show total cycles for single instruction");
+    }
+
+    #[test]
+    fn test_terminated_run_multiple_instructions() {
+        let mut buffer = Vec::new();
+        let mut displayer = CliDisplayer::new(&mut buffer, true);
+        let (sender, receiver) = channel();
+
+        // Create two log lines
+        let log_line1 = LogLine {
+            address: 0x2000,
+            opcode: 0xa9,
+            mnemonic: "LDA".to_string(),
+            resolution: AddressingModeResolution {
+                target_address: None,
+                operands: vec![0x42],
+                addressing_mode: AddressingMode::Immediate([0x42]),
+            },
+            outcome: "(0x42)".to_string(),
+            cycles: 2,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2002,
+            },
+        };
+
+        let log_line2 = LogLine {
+            address: 0x2002,
+            opcode: 0x85,
+            mnemonic: "STA".to_string(),
+            resolution: AddressingModeResolution {
+                target_address: Some(0x80),
+                operands: vec![0x80],
+                addressing_mode: AddressingMode::ZeroPage([0x80]),
+            },
+            outcome: "(0x42)".to_string(),
+            cycles: 3,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2004,
+            },
+        };
+
+        // Send a TerminatedRun token with multiple instructions
+        sender.send(OutputToken::TerminatedRun { 
+            loglines: vec![log_line1, log_line2], 
+            symbols: None,
+            reason: "Cycle count limit exceeded".to_string(),
+        }).unwrap();
+        drop(sender);
+        
+        displayer.display(receiver).unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+
+        // The actual formatting includes target addresses and proper spacing
+        let expected_instruction1 = "#0x2000: (a9 42)     LDA  #$42                      42|00|00|FF|nv-Bdizc[2]";
+        let expected_instruction2 = "#0x2002: (85 80)     STA  $80             (#0x0080) 42|00|00|FF|nv-Bdizc[3]";
+        
+        // Should show both instructions
+        assert!(output.contains(expected_instruction1), 
+            "Missing first instruction.\nExpected to find '{}'\nActual output:\n{}", 
+            expected_instruction1, output);
+        assert!(output.contains(expected_instruction2), 
+            "Missing second instruction.\nExpected to find '{}'\nActual output:\n{}", 
+            expected_instruction2, output);
+        // Should show total cycles
+        assert!(output.contains("🕒 Total cycles: 5"), "Missing or incorrect total cycles");
+        // Should show termination reason
+        assert!(output.contains("⛔ Run terminated: Cycle count limit exceeded"), "Missing termination reason");
+    }
+
+    #[test]
+    fn test_terminated_run_with_symbols() {
+        let mut buffer = Vec::new();
+        let mut displayer = CliDisplayer::new(&mut buffer, true);
+        let (sender, receiver) = channel();
+
+        // Create symbol table
+        let mut symbols = SymbolTable::new();
+        symbols.add_symbol(0x0080, "RESULT".to_string());
+
+        // Create log lines that use the symbol
+        let log_line = LogLine {
+            address: 0x2000,
+            opcode: 0x85,
+            mnemonic: "STA".to_string(),
+            resolution: AddressingModeResolution {
+                target_address: Some(0x80),
+                operands: vec![0x80],
+                addressing_mode: AddressingMode::ZeroPage([0x80]),
+            },
+            outcome: "(0x42)".to_string(),
+            cycles: 3,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2002,
+            },
+        };
+
+        // Send a TerminatedRun token with symbols
+        sender.send(OutputToken::TerminatedRun { 
+            loglines: vec![log_line], 
+            symbols: Some(symbols),
+            reason: "Cycle count limit exceeded".to_string(),
+        }).unwrap();
+        drop(sender);
+        
+        displayer.display(receiver).unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+
+        // The actual formatting includes target address and proper spacing
+        let expected_instruction = "#0x2000: (85 80)     STA  RESULT          (#0x0080) 42|00|00|FF|nv-Bdizc[3]";
+        // Should show the instruction with symbol substitution
+        assert!(output.contains(expected_instruction), 
+            "Incorrect symbol formatting.\nExpected to find '{}'\nActual output:\n{}", 
+            expected_instruction, output);
+        // Should show termination reason
+        assert!(output.contains("⛔ Run terminated: Cycle count limit exceeded"), "Missing termination reason");
     }
 }

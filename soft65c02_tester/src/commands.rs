@@ -9,7 +9,7 @@ use crate::{
     AppResult,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum OutputToken {
     Assertion {
         failure: Option<String>,
@@ -22,6 +22,11 @@ pub enum OutputToken {
     Run {
         loglines: Vec<LogLine>,
         symbols: Option<SymbolTable>,
+    },
+    TerminatedRun {
+        loglines: Vec<LogLine>,
+        symbols: Option<SymbolTable>,
+        reason: String,
     },
     Setup(Vec<String>),
     View(Vec<String>),
@@ -125,13 +130,17 @@ impl Command for RunCommand {
 
         // After stopping, check if we hit any cycle limits
         if has_cycle_limit && self.continue_condition.was_cycle_limit_hit(registers, memory) {
-            return Err(anyhow::anyhow!("Cycle count limit exceeded"));
+            Ok(OutputToken::TerminatedRun {
+                loglines,
+                symbols: symbols.clone(),
+                reason: "Cycle count limit exceeded".to_string(),
+            })
+        } else {
+            Ok(OutputToken::Run { 
+                loglines,
+                symbols: symbols.clone(),
+            })
         }
-
-        Ok(OutputToken::Run { 
-            loglines,
-            symbols: symbols.clone(),
-        })
     }
 }
 
@@ -154,6 +163,8 @@ impl BooleanExpression {
 
     fn was_cycle_limit_hit(&self, registers: &Registers, memory: &Memory) -> bool {
         match self {
+            // For cycle limits, we want to detect when the condition becomes false
+            // This means we've hit the limit
             Self::StrictlyLesser(left, right) => {
                 if matches!(left, Source::Register(RegisterSource::CycleCount)) {
                     if let Source::Value(limit) = right {
@@ -186,11 +197,32 @@ impl BooleanExpression {
                 }
                 false
             }
-            Self::And(left, right) | Self::Or(left, right) => {
-                left.was_cycle_limit_hit(registers, memory) || 
-                right.was_cycle_limit_hit(registers, memory)
+            Self::Equal(left, right) => {
+                if matches!(left, Source::Register(RegisterSource::CycleCount)) {
+                    if let Source::Value(limit) = right {
+                        // For equality, we've hit the limit if we're no longer equal
+                        return registers.cycle_count != *limit as u64;
+                    }
+                }
+                false
             }
-            _ => false,
+            Self::Different(left, right) => {
+                if matches!(left, Source::Register(RegisterSource::CycleCount)) {
+                    if let Source::Value(limit) = right {
+                        // For inequality, we've hit the limit if we become equal
+                        return registers.cycle_count == *limit as u64;
+                    }
+                }
+                false
+            }
+            Self::And(left, right) => {
+                left.was_cycle_limit_hit(registers, memory) || right.was_cycle_limit_hit(registers, memory)
+            }
+            Self::Or(left, right) => {
+                left.was_cycle_limit_hit(registers, memory) || right.was_cycle_limit_hit(registers, memory)
+            }
+            Self::Not(expr) => expr.was_cycle_limit_hit(registers, memory),
+            _ => false
         }
     }
 }
@@ -512,7 +544,7 @@ mod run_command_tests {
         memory.write(0x1005, &[0xd0, 0xfb]).unwrap();     // BNE $1002 (-5 bytes)
         memory.write(0x1007, &[0xdb]).unwrap();           // STP
 
-        let result = command.execute(&mut registers, &mut memory, &mut None);
+        let result = command.execute(&mut registers, &mut memory, &mut None).unwrap();
 
         // Read the last value stored at $80
         let final_x = memory.read(0x80, 1).unwrap()[0];
@@ -529,9 +561,13 @@ mod run_command_tests {
         assert_eq!(final_x, 0x45, "X should be 0x45 (69) after 31 iterations plus one more store");
         assert_eq!(registers.register_x, 0x44, "X register should be 0x44 (68) after final DEX");
 
-        // Verify cycle count - we should error when we hit or exceed 256
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        // Verify we got a TerminatedRun token with the cycle limit message
+        match result {
+            OutputToken::TerminatedRun { loglines: _, symbols: _, reason } => {
+                assert_eq!(reason, "Cycle count limit exceeded");
+            }
+            _ => panic!("Expected TerminatedRun token"),
+        }
         assert!(registers.cycle_count >= 0x100, "Should have executed at least 256 cycles");
     }
 
@@ -563,8 +599,11 @@ mod run_command_tests {
         };
         
         // This should complete normally
-        let result = command.execute(&mut registers, &mut memory, &mut None);
-        assert!(result.is_ok());
+        let result = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        match result {
+            OutputToken::Run { .. } => (),
+            _ => panic!("Expected normal Run token"),
+        }
         assert_eq!(registers.register_x, 0);
 
         // Reset for next test
@@ -587,13 +626,17 @@ mod run_command_tests {
             start_address: None,
         };
         
-        // This should fail with cycle count exceeded
-        let result = command.execute(&mut registers, &mut memory, &mut None);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        // This should return a TerminatedRun token
+        let result = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        match result {
+            OutputToken::TerminatedRun { loglines: _, symbols: _, reason } => {
+                assert_eq!(reason, "Cycle count limit exceeded");
+            }
+            _ => panic!("Expected TerminatedRun token"),
+        }
         assert!(registers.register_x > 0); // Should not have completed
 
-        // Test that non-cycle conditions don't cause errors
+        // Test that non-cycle conditions don't cause termination
         registers = Registers::new_initialized(0x1000);
         registers.register_x = 5;
 
@@ -607,8 +650,11 @@ mod run_command_tests {
         };
         
         // This should complete normally when X reaches 3
-        let result = command.execute(&mut registers, &mut memory, &mut None);
-        assert!(result.is_ok());
+        let result = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        match result {
+            OutputToken::Run { .. } => (),
+            _ => panic!("Expected normal Run token"),
+        }
         assert_eq!(registers.register_x, 3);
     }
 
@@ -650,11 +696,15 @@ mod run_command_tests {
             start_address: None,
         };
 
-        let result = command.execute(&mut registers, &mut memory, &mut None);
+        let result = command.execute(&mut registers, &mut memory, &mut None).unwrap();
         
         // Should fail due to hitting the 100 cycle limit while X > 10
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        match result {
+            OutputToken::TerminatedRun { loglines: _, symbols: _, reason } => {
+                assert_eq!(reason, "Cycle count limit exceeded");
+            }
+            _ => panic!("Expected TerminatedRun token"),
+        }
         assert!(registers.cycle_count >= 100); // Should stop after 100 cycles
         assert!(registers.register_x > 10); // And X should still be > 10
     }
@@ -700,14 +750,52 @@ mod run_command_tests {
             start_address: None,
         };
 
-        let result = command.execute(&mut registers, &mut memory, &mut None);
+        let result = command.execute(&mut registers, &mut memory, &mut None).unwrap();
         
         // Should fail due to hitting the 10 cycle limit while Y is still ≤ 5
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        match result {
+            OutputToken::TerminatedRun { loglines: _, symbols: _, reason } => {
+                assert_eq!(reason, "Cycle count limit exceeded");
+            }
+            _ => panic!("Expected TerminatedRun token"),
+        }
         assert!(registers.register_y <= 5); // Y should still be small
         assert!(registers.cycle_count >= 10); // Should be 10 or more
         assert_ne!(registers.register_x, 11); // X should not have reached 11
+    }
+
+    #[test]
+    fn test_run_until_cycle_limit() {
+        let mut registers = Registers::new_initialized(0x1000);
+        let mut memory = Memory::new_with_ram();
+        
+        // Program that just decrements X until zero
+        // DEX (2 cycles) followed by BNE (-2) (3 cycles when taken)
+        // So each loop is 5 cycles
+        memory.write(0x1000, &[0xca, 0xd0, 0xfd]).unwrap(); // DEX, BNE -2
+        registers.register_x = 10; // Will take 50 cycles to complete
+
+        // Run until cycles > 20 (should stop after hitting 21+ cycles)
+        let command = RunCommand {
+            stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::Not(Box::new(BooleanExpression::StrictlyGreater(
+                Source::Register(RegisterSource::CycleCount),
+                Source::Value(20),
+            ))),
+            start_address: None,
+        };
+        
+        let result = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        
+        // Should complete normally since we hit the target cycle count
+        match result {
+            OutputToken::Run { loglines, .. } => {
+                assert!(registers.cycle_count > 20, "Should have executed more than 20 cycles");
+                assert!(registers.register_x > 0, "Should not have completed the full loop");
+                assert!(!loglines.is_empty(), "Should have executed some instructions");
+            }
+            _ => panic!("Expected Run token"),
+        }
     }
 }
 
