@@ -13,21 +13,33 @@ impl<'a> LogLineFormatter<'a> {
     }
 
     fn get_adjacent_symbol(&self, addr: u16) -> Option<String> {
-        // Only handle zero page addresses
-        if addr > 0xFF {
-            return None;
-        }
+        const MAX_STRUCT_OFFSET: u16 = 0x1F;  // Maximum reasonable struct field offset
 
-        // Check if the address is one more than a symbol
         if let Some(symbols) = self.symbols {
-            if addr > 0 {
-                let prev_addr = addr - 1;
-                if let Some(base_sym) = symbols.get_symbols_for_address(prev_addr).first() {
-                    // Only use the adjacent symbol if the current address doesn't have its own symbol
-                    if symbols.get_symbols_for_address(addr).is_empty() {
-                        return Some(format!("{}+1", base_sym));
+            // First check if we have an exact match
+            if !symbols.get_symbols_for_address(addr).is_empty() {
+                return None;  // Let the exact match be handled by the caller
+            }
+
+            // Look for the closest symbol before this address within our max offset
+            let mut closest_addr = None;
+            let mut closest_distance = MAX_STRUCT_OFFSET + 1;  // Initialize to just over our max
+
+            // Check all symbols that could be within range
+            for base_addr in addr.saturating_sub(MAX_STRUCT_OFFSET)..=addr {
+                if let Some(sym) = symbols.get_symbols_for_address(base_addr).first() {
+                    let distance = addr - base_addr;
+                    if distance > 0 && distance <= MAX_STRUCT_OFFSET && distance < closest_distance {
+                        closest_addr = Some((base_addr, sym.to_string()));
+                        closest_distance = distance;
                     }
                 }
+            }
+
+            // If we found a close symbol, format it with the offset
+            if let Some((base_addr, sym)) = closest_addr {
+                let offset = addr - base_addr;
+                return Some(format!("{}+{}", sym, offset));
             }
         }
         None
@@ -39,18 +51,26 @@ impl<'a> LogLineFormatter<'a> {
         
         let mode_str = format!("{}", self.log_line.resolution.addressing_mode);
         
-        // Get symbol for the final target address
-        let target_symbol = self.log_line.resolution.target_address.and_then(|addr| {
-            // First try direct symbol lookup
-            if let Some(sym) = self.symbols.and_then(|symbols| {
-                symbols.get_symbols_for_address(addr as u16).first().map(|s| s.to_string())
-            }) {
-                Some(sym)
-            } else {
-                // If no direct symbol, try adjacent symbol for zero page
-                self.get_adjacent_symbol(addr as u16)
-            }
-        });
+        // Get symbol for the final target address, or base address for indexed modes
+        let target_symbol = match self.log_line.resolution.addressing_mode {
+            AddressingMode::AbsoluteXIndexed([lo, hi]) | AddressingMode::AbsoluteYIndexed([lo, hi]) => {
+                let base_addr = ((hi as u16) << 8) | (lo as u16);
+                self.symbols.and_then(|symbols| {
+                    symbols.get_symbols_for_address(base_addr).first().map(|s| s.to_string())
+                })
+            },
+            _ => self.log_line.resolution.target_address.and_then(|addr| {
+                // First try direct symbol lookup
+                if let Some(sym) = self.symbols.and_then(|symbols| {
+                    symbols.get_symbols_for_address(addr as u16).first().map(|s| s.to_string())
+                }) {
+                    Some(sym)
+                } else {
+                    // If no direct symbol, try adjacent symbol for zero page
+                    self.get_adjacent_symbol(addr as u16)
+                }
+            })
+        };
 
         // Format the address part
         let addr_str = self.log_line.resolution.target_address
@@ -100,6 +120,20 @@ impl<'a> LogLineFormatter<'a> {
                                     "", 
                                     addr,
                                     width = content_width.saturating_sub(mode_str.len() + 1)
+                                )
+                            },
+                            AddressingMode::AbsoluteXIndexed(_) => {
+                                format!("{:<width$} {}", 
+                                    format!("{},X", sym),
+                                    addr,
+                                    width = content_width
+                                )
+                            },
+                            AddressingMode::AbsoluteYIndexed(_) => {
+                                format!("{:<width$} {}", 
+                                    format!("{},Y", sym),
+                                    addr,
+                                    width = content_width
                                 )
                             },
                             _ => {
@@ -311,6 +345,32 @@ mod tests {
         let formatted = LogLineFormatter::new(&log_line, Some(&symbols)).format();
         assert!(formatted.contains("COLOR2"), "Symbol substitution failed");
         assert_eq!(formatted, "#0x2002: (8d c6 02)  STA  COLOR2          (#0x02C6) 42|00|00|FF|nv-Bdizc[4]");
+
+        // Test indexed addressing mode with symbol substitution
+        let log_line_indexed = LogLine {
+            address: 0x2002,
+            opcode: 0x9d,
+            mnemonic: "STA".to_string(),
+            resolution: AddressingModeResolution {
+                target_address: Some(0x02C7),  // Base + X
+                operands: vec![0xC6, 0x02],
+                addressing_mode: AddressingMode::AbsoluteXIndexed([0xC6, 0x02]),
+            },
+            outcome: "(0x42)".to_string(),
+            cycles: 5,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 1,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2002,
+            },
+        };
+
+        let formatted = LogLineFormatter::new(&log_line_indexed, Some(&symbols)).format();
+        assert!(formatted.contains("COLOR2,X"), "Indexed symbol substitution failed");
+        assert_eq!(formatted, "#0x2002: (9d c6 02)  STA  COLOR2,X        (#0x02C7) 42|01|00|FF|nv-Bdizc[5]");
     }
 
     #[test]
@@ -581,5 +641,52 @@ mod tests {
             expected_instruction, output);
         // Should show termination reason
         assert!(output.contains("⛔ Run terminated: Cycle count limit exceeded"), "Missing termination reason");
+    }
+
+    #[test]
+    fn test_struct_field_offsets() {
+        let mut symbols = SymbolTable::new();
+        symbols.add_symbol(0x2000, "page_header".to_string());
+        symbols.add_symbol(0x2100, "_insert_params".to_string());
+
+        // Test various offsets from the base symbols
+        let test_cases = [
+            // Base address + offset, expected output
+            (0x2000, "page_header"),           // Exact match
+            (0x2001, "page_header+1"),         // +1 offset
+            (0x2010, "page_header+16"),        // +16 offset
+            (0x201F, "page_header+31"),        // Maximum allowed offset
+            (0x2020, "$2020"),                 // Just beyond max offset
+            (0x2100, "_insert_params"),        // Second symbol exact match
+            (0x2105, "_insert_params+5"),      // Offset from second symbol
+        ];
+
+        for (addr, expected_sym) in test_cases {
+            let log_line = LogLine {
+                address: 0x1000,
+                opcode: 0xad,
+                mnemonic: "LDA".to_string(),
+                resolution: AddressingModeResolution {
+                    target_address: Some(addr),
+                    operands: vec![(addr & 0xFF) as u8, (addr >> 8) as u8],
+                    addressing_mode: AddressingMode::Absolute([(addr & 0xFF) as u8, (addr >> 8) as u8]),
+                },
+                outcome: "(0x42)".to_string(),
+                cycles: 4,
+                registers: RegisterState {
+                    accumulator: 0x42,
+                    register_x: 0,
+                    register_y: 0,
+                    status: 0,
+                    stack_pointer: 0xFF,
+                    command_pointer: 0x1000,
+                },
+            };
+
+            let formatted = LogLineFormatter::new(&log_line, Some(&symbols)).format();
+            assert!(formatted.contains(expected_sym), 
+                "Failed for address 0x{:04X}: Expected '{}' in output but got '{}'", 
+                addr, expected_sym, formatted);
+        }
     }
 }
