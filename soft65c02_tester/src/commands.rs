@@ -3,7 +3,7 @@ use std::{fs::File, io::Read, path::PathBuf};
 use soft65c02_lib::{execute_step, AddressableIO, LogLine, Memory, Registers};
 
 use crate::{
-    until_condition::{Assignment, BooleanExpression},
+    until_condition::{Assignment, BooleanExpression, Source, RegisterSource},
     SymbolTable,
     Disassembler,
     AppResult,
@@ -108,9 +108,13 @@ impl Command for RunCommand {
         let mut loglines: Vec<LogLine> = Vec::new();
         let mut cp = registers.command_pointer;
 
+        // Check if we have any cycle limits in the expression
+        let has_cycle_limit = self.continue_condition.contains_cycle_limit();
+        
         // solve() returns None for truthy conditions (should continue)
         while self.continue_condition.solve(registers, memory).is_none() {
-            loglines.push(execute_step(registers, memory)?);
+            let line = execute_step(registers, memory)?;
+            loglines.push(line);
 
             let should_stop = self.stop_condition.solve(registers, memory).is_none();
             if registers.command_pointer == cp || should_stop {
@@ -119,12 +123,75 @@ impl Command for RunCommand {
             cp = registers.command_pointer;
         }
 
-        let token = OutputToken::Run { 
+        // After stopping, check if we hit any cycle limits
+        if has_cycle_limit && self.continue_condition.was_cycle_limit_hit(registers, memory) {
+            return Err(anyhow::anyhow!("Cycle count limit exceeded"));
+        }
+
+        Ok(OutputToken::Run { 
             loglines,
             symbols: symbols.clone(),
-        };
+        })
+    }
+}
 
-        Ok(token)
+impl BooleanExpression {
+    fn contains_cycle_limit(&self) -> bool {
+        match self {
+            Self::StrictlyLesser(left, _) | Self::StrictlyGreater(left, _) |
+            Self::LesserOrEqual(left, _) | Self::GreaterOrEqual(left, _) |
+            Self::Equal(left, _) | Self::Different(left, _) => {
+                matches!(left, Source::Register(RegisterSource::CycleCount))
+            }
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.contains_cycle_limit() || right.contains_cycle_limit()
+            }
+            Self::Not(expr) => expr.contains_cycle_limit(),
+            Self::Value(_) => false,
+            Self::MemorySequence(_, _) => false,
+        }
+    }
+
+    fn was_cycle_limit_hit(&self, registers: &Registers, memory: &Memory) -> bool {
+        match self {
+            Self::StrictlyLesser(left, right) => {
+                if matches!(left, Source::Register(RegisterSource::CycleCount)) {
+                    if let Source::Value(limit) = right {
+                        return registers.cycle_count >= *limit as u64;
+                    }
+                }
+                false
+            }
+            Self::StrictlyGreater(left, right) => {
+                if matches!(left, Source::Register(RegisterSource::CycleCount)) {
+                    if let Source::Value(limit) = right {
+                        return registers.cycle_count <= *limit as u64;
+                    }
+                }
+                false
+            }
+            Self::LesserOrEqual(left, right) => {
+                if matches!(left, Source::Register(RegisterSource::CycleCount)) {
+                    if let Source::Value(limit) = right {
+                        return registers.cycle_count > *limit as u64;
+                    }
+                }
+                false
+            }
+            Self::GreaterOrEqual(left, right) => {
+                if matches!(left, Source::Register(RegisterSource::CycleCount)) {
+                    if let Source::Value(limit) = right {
+                        return registers.cycle_count < *limit as u64;
+                    }
+                }
+                false
+            }
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.was_cycle_limit_hit(registers, memory) || 
+                right.was_cycle_limit_hit(registers, memory)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -445,7 +512,7 @@ mod run_command_tests {
         memory.write(0x1005, &[0xd0, 0xfb]).unwrap();     // BNE $1002 (-5 bytes)
         memory.write(0x1007, &[0xdb]).unwrap();           // STP
 
-        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        let result = command.execute(&mut registers, &mut memory, &mut None);
 
         // Read the last value stored at $80
         let final_x = memory.read(0x80, 1).unwrap()[0];
@@ -462,16 +529,187 @@ mod run_command_tests {
         assert_eq!(final_x, 0x45, "X should be 0x45 (69) after 31 iterations plus one more store");
         assert_eq!(registers.register_x, 0x44, "X register should be 0x44 (68) after final DEX");
 
-        // Verify cycle count - we should stop when we hit or exceed 256
-        if let OutputToken::Run { loglines, symbols: _ } = token {
-            let total_cycles: u16 = loglines.iter().map(|l| l.cycles as u16).sum();
-            assert!(total_cycles >= 256, "Should have executed at least 256 cycles");
-        } else {
-            panic!("Expected Run output token");
-        }
+        // Verify cycle count - we should error when we hit or exceed 256
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        assert!(registers.cycle_count >= 0x100, "Should have executed at least 256 cycles");
+    }
+
+    #[test]
+    fn test_run_with_cycle_limit() {
+        let mut registers = Registers::new_initialized(0x1000);
+        let mut memory = Memory::new_with_ram();
+        
+        // Program that just decrements X until zero
+        // DEX (2 cycles) followed by BNE (-2) (3 cycles when taken)
+        // So each loop is 5 cycles
+        memory.write(0x1000, &[0xca, 0xd0, 0xfd]).unwrap(); // DEX, BNE -2
+        registers.register_x = 10; // Will take 50 cycles to complete
+
+        // This should succeed - needs exactly 50 cycles
+        let command = RunCommand {
+            stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::And(
+                Box::new(BooleanExpression::Different(
+                    Source::Register(RegisterSource::RegisterX),
+                    Source::Value(0),
+                )),
+                Box::new(BooleanExpression::StrictlyLesser(
+                    Source::Register(RegisterSource::CycleCount),
+                    Source::Value(60), // Give it some headroom
+                )),
+            ),
+            start_address: None,
+        };
+        
+        // This should complete normally
+        let result = command.execute(&mut registers, &mut memory, &mut None);
+        assert!(result.is_ok());
+        assert_eq!(registers.register_x, 0);
+
+        // Reset for next test
+        registers = Registers::new_initialized(0x1000);
+        registers.register_x = 100; // Would take 500 cycles to complete
+
+        // This should fail - cycle limit too low
+        let command = RunCommand {
+            stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::And(
+                Box::new(BooleanExpression::Different(
+                    Source::Register(RegisterSource::RegisterX),
+                    Source::Value(0),
+                )),
+                Box::new(BooleanExpression::StrictlyLesser(
+                    Source::Register(RegisterSource::CycleCount),
+                    Source::Value(20),
+                )),
+            ),
+            start_address: None,
+        };
+        
+        // This should fail with cycle count exceeded
+        let result = command.execute(&mut registers, &mut memory, &mut None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        assert!(registers.register_x > 0); // Should not have completed
+
+        // Test that non-cycle conditions don't cause errors
+        registers = Registers::new_initialized(0x1000);
+        registers.register_x = 5;
+
+        let command = RunCommand {
+            stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::Different(
+                Source::Register(RegisterSource::RegisterX),
+                Source::Value(3), // Stop when X reaches 3
+            ),
+            start_address: None,
+        };
+        
+        // This should complete normally when X reaches 3
+        let result = command.execute(&mut registers, &mut memory, &mut None);
+        assert!(result.is_ok());
+        assert_eq!(registers.register_x, 3);
+    }
+
+    #[test]
+    fn test_run_with_complex_cycle_limits_first_part() {
+        let mut registers = Registers::new_initialized(0x1000);
+        let mut memory = Memory::new_with_ram();
+        
+        memory.write(0x1000, &[0xca, 0xc8, 0xd0, 0xfc]).unwrap();
+        
+        // Initial state: X=50, Y=0 - Much higher X means we'll hit cycle limit before X ≤ 10
+        registers.register_x = 50;
+        registers.register_y = 0;
+
+        let command = RunCommand {
+            stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::Or(
+                Box::new(BooleanExpression::And(
+                    Box::new(BooleanExpression::StrictlyGreater(
+                        Source::Register(RegisterSource::RegisterX),
+                        Source::Value(10),
+                    )),
+                    Box::new(BooleanExpression::StrictlyLesser(
+                        Source::Register(RegisterSource::CycleCount),
+                        Source::Value(100),
+                    )),
+                )),
+                Box::new(BooleanExpression::And(
+                    Box::new(BooleanExpression::LesserOrEqual(
+                        Source::Register(RegisterSource::RegisterY),
+                        Source::Value(5),
+                    )),
+                    Box::new(BooleanExpression::StrictlyLesser(
+                        Source::Register(RegisterSource::CycleCount),
+                        Source::Value(200),
+                    )),
+                )),
+            ),
+            start_address: None,
+        };
+
+        let result = command.execute(&mut registers, &mut memory, &mut None);
+        
+        // Should fail due to hitting the 100 cycle limit while X > 10
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        assert!(registers.cycle_count >= 100); // Should stop after 100 cycles
+        assert!(registers.register_x > 10); // And X should still be > 10
+    }
+
+    #[test]
+    fn test_run_with_complex_cycle_limits_second_part() {
+        let mut registers = Registers::new_initialized(0x1000);
+        let mut memory = Memory::new_with_ram();
+        
+        memory.write(0x1000, &[0xca, 0xc8, 0xd0, 0xfc]).unwrap();
+        
+        // Initial state: X=9, Y=0
+        // Both conditions must be true to continue:
+        // 1. X != 11 AND cycles < 500 (won't be the limiting factor)
+        // 2. Y <= 5 AND cycles < 10 (will hit cycle limit first)
+        registers.register_x = 9;
+        registers.register_y = 0;
+
+        let command = RunCommand {
+            stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::And(
+                Box::new(BooleanExpression::And(
+                    Box::new(BooleanExpression::Different(
+                        Source::Register(RegisterSource::RegisterX),
+                        Source::Value(11),
+                    )),
+                    Box::new(BooleanExpression::StrictlyLesser(
+                        Source::Register(RegisterSource::CycleCount),
+                        Source::Value(500),
+                    )),
+                )),
+                Box::new(BooleanExpression::And(
+                    Box::new(BooleanExpression::LesserOrEqual(
+                        Source::Register(RegisterSource::RegisterY),
+                        Source::Value(5),
+                    )),
+                    Box::new(BooleanExpression::StrictlyLesser(
+                        Source::Register(RegisterSource::CycleCount),
+                        Source::Value(10),
+                    )),
+                )),
+            ),
+            start_address: None,
+        };
+
+        let result = command.execute(&mut registers, &mut memory, &mut None);
+        
+        // Should fail due to hitting the 10 cycle limit while Y is still ≤ 5
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Cycle count limit exceeded"));
+        assert!(registers.register_y <= 5); // Y should still be small
+        assert!(registers.cycle_count >= 10); // Should be 10 or more
+        assert_ne!(registers.register_x, 11); // X should not have reached 11
     }
 }
-
 
 #[cfg(test)]
 mod register_command_tests {
