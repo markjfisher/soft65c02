@@ -375,6 +375,20 @@ You can also verify sequences of bytes in memory:
 assert $data ~ 0x(01,02,03)  $$verify three bytes in sequence$$
 ```
 
+If an array fails to match the expected bytes, the corresponding memory is shown with a hex dump like this:
+
+```
+⚡ 06 → t2: first 8 bytes of pagegroup data ❌ ((#0x3B1A ~ 0x(01,01,02,03,04,05,06,07))
+Memory comparison failed:
+
+Expected:
+3B1A : 01 01 02 03 04 05 06 07                         | ........
+
+Actual:
+3B1A : 00 01 02 03 04 05 06 07                         | ........
+)
+```
+
 #### asserting pointers
 
 The `->` operator can be used to verify that a memory location contains a pointer (16-bit address in little-endian format) that points to a specific target address. This is particularly useful for testing indirect addressing and pointer manipulation.

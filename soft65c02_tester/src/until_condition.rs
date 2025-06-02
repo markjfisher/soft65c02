@@ -2,7 +2,7 @@ use anyhow::anyhow;
 use soft65c02_lib::{AddressableIO, Memory, Registers};
 use std::fmt::{self};
 
-use crate::AppResult;
+use crate::{AppResult, utils};
 
 #[derive(Debug)]
 pub enum RegisterSource {
@@ -175,44 +175,6 @@ pub enum BooleanExpression {
 }
 
 impl BooleanExpression {
-    fn format_hex_dump(addr: usize, bytes: &[u8]) -> String {
-        let mut result = String::new();
-        for chunk_start in (0..bytes.len()).step_by(16) {
-            let chunk_end = std::cmp::min(chunk_start + 16, bytes.len());
-            let chunk = &bytes[chunk_start..chunk_end];
-            
-            // Add address
-            result.push_str(&format!("{:04X} : ", addr + chunk_start));
-            
-            // Add hex bytes
-            for &byte in chunk {
-                result.push_str(&format!("{:02X} ", byte));
-            }
-            
-            // Pad with spaces if less than 16 bytes
-            for _ in chunk.len()..16 {
-                result.push_str("   ");
-            }
-            
-            // Add ASCII representation
-            result.push_str("| ");
-            for &byte in chunk {
-                let ch = if byte >= 0x20 && byte <= 0x7E {
-                    byte as char
-                } else {
-                    '.'
-                };
-                result.push(ch);
-            }
-            
-            // Add newline if not the last line
-            if chunk_end < bytes.len() {
-                result.push('\n');
-            }
-        }
-        result
-    }
-
     /// Solve the boolean expression with the given registers and memory.
     /// If the expression is true, None is returned. Otherwise, the failure message is returned.
     pub fn solve(&self, registers: &Registers, memory: &Memory) -> Option<String> {
@@ -334,8 +296,8 @@ impl BooleanExpression {
                         } else {
                             Some(format!(
                                 "({self})\nMemory comparison failed:\n\nExpected:\n{}\n\nActual:\n{}\n",
-                                Self::format_hex_dump(*addr, expected_bytes),
-                                Self::format_hex_dump(*addr, &actual_bytes)
+                                utils::format_hex_dump(*addr, expected_bytes),
+                                utils::format_hex_dump(*addr, &actual_bytes)
                             ))
                         }
                     } else {
@@ -503,7 +465,7 @@ mod tests_boolean_expression {
             0x00, 0x01, 0x02  // Extra bytes to test partial line
         ];
         
-        let formatted = BooleanExpression::format_hex_dump(0x21C1, &test_bytes);
+        let formatted = utils::format_hex_dump(0x21C1, &test_bytes);
         let expected = "\
 21C1 : 32 38 2F 31 30 2F 32 30 31 39 20 31 31 3A 30 30 | 28/10/2019 11:00
 21D1 : 00 01 02                                        | ...";

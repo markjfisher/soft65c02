@@ -408,9 +408,8 @@ impl<'a> MemoryCommandParser<'a> {
             Rule::symbol_load => self.handle_symbol_load(pair.into_inner())?,
             Rule::symbol_add => self.handle_symbol_add(pair.into_inner())?,
             Rule::symbol_remove => self.handle_symbol_remove(pair.into_inner())?,
-            _ => {
-                panic!("Unexpected pair '{pair:?}'. memory_{{load,flush,write,fill}} expected.");
-            }
+            Rule::memory_show => self.handle_memory_show(pair.into_inner())?,
+            _ => return Err(anyhow!("Unknown memory command")),
         };
 
         Ok(command)
@@ -615,6 +614,41 @@ impl<'a> MemoryCommandParser<'a> {
         };
 
         Ok(MemoryCommand::Fill { start, end, value })
+    }
+
+    fn handle_memory_show(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+        let addr_pair = pairs.next().unwrap();
+        let address = match addr_pair.as_rule() {
+            Rule::memory_location => {
+                let source = self.context.parse_source_memory(&addr_pair)?;
+                if let Source::Memory(addr) = source {
+                    addr
+                } else {
+                    return Err(anyhow!("Expected memory location for show address"));
+                }
+            }
+            _ => return Err(anyhow!("Expected memory_location, got {:?}", addr_pair.as_rule())),
+        };
+
+        let length_pair = pairs.next().unwrap();
+        let length = match length_pair.as_rule() {
+            Rule::value8 | Rule::value16 => {
+                match self.context.parse_source_value(&length_pair)? {
+                    Source::Value(v) => v,
+                    _ => return Err(anyhow!("Expected value for length")),
+                }
+            }
+            _ => return Err(anyhow!("Expected value8 or value16 for length")),
+        };
+
+        // Parse optional description
+        let description = if let Some(desc_pair) = pairs.next() {
+            Some(desc_pair.as_str().to_string())
+        } else {
+            None
+        };
+
+        Ok(MemoryCommand::Show { address, length, description })
     }
 }
 
@@ -951,6 +985,79 @@ mod memory_command_parser_tests {
         assert!(
             matches!(command, MemoryCommand::Fill { start, end, value } 
                 if start == 0x1000 && end == 0x1FFF && value == 42)
+        );
+    }
+
+    #[test]
+    fn test_memory_show() {
+        let context = create_test_context();
+        
+        // Test with hex address and 8-bit length
+        let input = "memory show #0x1234 0x10";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                MemoryCommand::Show { address, length, description }
+                if address == 0x1234 && length == 0x10 && description.is_none()
+            )
+        );
+
+        // Test with symbol and 16-bit length
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "data".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        let input = "memory show $data 0x100";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                MemoryCommand::Show { address, length, description }
+                if address == 0x1000 && length == 0x100 && description.is_none()
+            )
+        );
+
+        // Test with decimal length
+        let input = "memory show #0x1234 16";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                MemoryCommand::Show { address, length, description }
+                if address == 0x1234 && length == 16 && description.is_none()
+            )
+        );
+
+        // Test with description
+        let input = "memory show #0x1234 16 $$Stack contents$$";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                MemoryCommand::Show { address, length, description }
+                if address == 0x1234 && length == 16 && description.as_deref() == Some("Stack contents")
+            )
         );
     }
 }

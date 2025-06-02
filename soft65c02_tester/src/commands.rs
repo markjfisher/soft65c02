@@ -7,6 +7,7 @@ use crate::{
     SymbolTable,
     Disassembler,
     AppResult,
+    utils,
 };
 
 #[derive(Debug, Clone)]
@@ -266,6 +267,7 @@ pub enum MemoryCommand {
     LoadSymbols { symbols: SymbolTable },
     AddSymbol { name: String, value: u16 },
     RemoveSymbol { name: String },
+    Show { address: usize, length: usize, description: Option<String> },
 }
 
 impl Command for MemoryCommand {
@@ -360,6 +362,15 @@ impl Command for MemoryCommand {
                 } else {
                     vec!["No symbol table available".to_string()]
                 }
+            },
+            Self::Show { address, length, description } => {
+                let data = memory.read(*address, *length)?;
+                let mut output = Vec::new();
+                if let Some(desc) = description {
+                    output.push(desc.clone());
+                }
+                output.push(format!("\n{}", utils::format_hex_dump(*address, &data)));
+                output
             }
         };
 
@@ -1015,6 +1026,115 @@ mod memory_command_tests {
         // Check that memory outside the range is unaffected
         assert_eq!(memory.read(0x0FFF, 1).unwrap()[0], 0x00);
         assert_eq!(memory.read(0x1003, 1).unwrap()[0], 0x00);
+    }
+
+    #[test]
+    fn test_memory_show_output() {
+        let command = MemoryCommand::Show {
+            address: 0x1000,
+            length: 16,
+            description: None,
+        };
+        let mut registers = Registers::new_initialized(0x0000);
+        let mut memory = Memory::new_with_ram();
+        
+        // Write test data with a mix of hex values and ASCII printable characters
+        // "Hello, World!" followed by some non-printable bytes
+        memory.write(0x1000, &[
+            b'H', b'e', b'l', b'l', b'o', b',', b' ', b'W',  // Hello, W
+            b'o', b'r', b'l', b'd', b'!', 0x00, 0x01, 0xFF   // orld!...
+        ]).unwrap();
+
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        // Check that we got a Setup token with the expected hex dump
+        match token {
+            OutputToken::Setup(lines) => {
+                assert_eq!(lines.len(), 1);
+                let expected = format!("\n1000 : 48 65 6C 6C 6F 2C 20 57 6F 72 6C 64 21 00 01 FF | Hello, World!...");
+                assert_eq!(lines[0], expected);
+            }
+            _ => panic!("Expected Setup token"),
+        }
+
+        // Test with description
+        let command = MemoryCommand::Show {
+            address: 0x1000,
+            length: 16,
+            description: Some("Showing Hello World".to_string()),
+        };
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        match token {
+            OutputToken::Setup(lines) => {
+                assert_eq!(lines.len(), 2);
+                assert_eq!(lines[0], "Showing Hello World");
+                let expected = format!("\n1000 : 48 65 6C 6C 6F 2C 20 57 6F 72 6C 64 21 00 01 FF | Hello, World!...");
+                assert_eq!(lines[1], expected);
+            }
+            _ => panic!("Expected Setup token"),
+        }
+    }
+
+    #[test]
+    fn test_memory_show_output_partial_line() {
+        let command = MemoryCommand::Show {
+            address: 0x1000,
+            length: 7,  // Just show "Hello, "
+            description: None,
+        };
+        let mut registers = Registers::new_initialized(0x0000);
+        let mut memory = Memory::new_with_ram();
+        
+        // Write test data with printable ASCII characters
+        memory.write(0x1000, &[
+            b'H', b'e', b'l', b'l', b'o', b',', b' ',  // "Hello, "
+        ]).unwrap();
+
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        // Check that we got a Setup token with the expected hex dump
+        match token {
+            OutputToken::Setup(lines) => {
+                assert_eq!(lines.len(), 1);
+                let expected = format!("\n1000 : 48 65 6C 6C 6F 2C 20                            | Hello, ");
+                assert_eq!(lines[0], expected);
+            }
+            _ => panic!("Expected Setup token"),
+        }
+    }
+
+    #[test]
+    fn test_memory_show_output_multiple_lines() {
+        let command = MemoryCommand::Show {
+            address: 0x1000,
+            length: 32,  // Two full lines
+            description: None,
+        };
+        let mut registers = Registers::new_initialized(0x0000);
+        let mut memory = Memory::new_with_ram();
+        
+        // Write test data with printable ASCII characters
+        memory.write(0x1000, &[
+            // First line: "Hello, World!" + 3 special chars
+            b'H', b'e', b'l', b'l', b'o', b',', b' ', b'W',
+            b'o', b'r', b'l', b'd', b'!', 0x00, 0x01, 0xFF,
+            // Second line: "Testing 123" + some control chars
+            b'T', b'e', b's', b't', b'i', b'n', b'g', b' ',
+            b'1', b'2', b'3', 0x07, 0x08, 0x09, 0x0A, 0x0B
+        ]).unwrap();
+
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        // Check that we got a Setup token with the expected hex dump
+        match token {
+            OutputToken::Setup(lines) => {
+                assert_eq!(lines.len(), 1);
+                let expected = format!("\n1000 : 48 65 6C 6C 6F 2C 20 57 6F 72 6C 64 21 00 01 FF | Hello, World!...\n1010 : 54 65 73 74 69 6E 67 20 31 32 33 07 08 09 0A 0B | Testing 123.....");
+                assert_eq!(lines[0], expected);
+            }
+            _ => panic!("Expected Setup token"),
+        }
     }
 }
 
