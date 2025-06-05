@@ -2693,9 +2693,27 @@ impl<'a> CliCommandParser<'a> {
                     end: start + length - 1 
                 }
             }
+            Rule::enable_instruction => {
+                let mut pairs = pair.into_inner();
+                let function_name = pairs.next().unwrap().as_str();
+                let function = match function_name {
+                    "trace_logging" => ControllableFunction::TraceLogging,
+                    _ => return Err(anyhow::anyhow!("Unknown function: {}", function_name)),
+                };
+                CliCommand::Enable(function)
+            }
+            Rule::disable_instruction => {
+                let mut pairs = pair.into_inner();
+                let function_name = pairs.next().unwrap().as_str();
+                let function = match function_name {
+                    "trace_logging" => ControllableFunction::TraceLogging,
+                    _ => return Err(anyhow::anyhow!("Unknown function: {}", function_name)),
+                };
+                CliCommand::Disable(function)
+            }
             _ => {
                 panic!(
-                    "'{}' was not expected here: 'register|memory|run|assert|reset|symbols|disassemble instruction'.",
+                    "'{}' was not expected here: 'register|memory|run|assert|reset|symbols|disassemble|enable|disable instruction'.",
                     pair.as_str()
                 );
             }
@@ -2867,6 +2885,49 @@ mod cli_command_parser_test {
         assert!(CliCommandParser::from("disassemble #0x1000").is_err()); // Missing length
         assert!(CliCommandParser::from("disassemble #0xZZZZ 0x10").is_err()); // Invalid hex address
         assert!(CliCommandParser::from("disassemble #0x1000 0xZZZZ").is_err()); // Invalid hex length
+    }
+
+    #[test]
+    fn test_enable_disable_parser() {
+        // Test enable trace_logging
+        let cli_command = CliCommandParser::from("enable trace_logging").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Enable(ControllableFunction::TraceLogging)
+        ));
+
+        // Test disable trace_logging
+        let cli_command = CliCommandParser::from("disable trace_logging").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Disable(ControllableFunction::TraceLogging)
+        ));
+
+        // Test case insensitivity for command words
+        let cli_command = CliCommandParser::from("ENABLE trace_logging").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Enable(ControllableFunction::TraceLogging)
+        ));
+
+        let cli_command = CliCommandParser::from("DISABLE trace_logging").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Disable(ControllableFunction::TraceLogging)
+        ));
+
+        // Test mixed case
+        let cli_command = CliCommandParser::from("Enable trace_logging").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Enable(ControllableFunction::TraceLogging)
+        ));
+
+        // Test error cases
+        assert!(CliCommandParser::from("enable").is_err()); // Missing function name
+        assert!(CliCommandParser::from("disable").is_err()); // Missing function name
+        assert!(CliCommandParser::from("enable unknown_function").is_err()); // Unknown function
+        assert!(CliCommandParser::from("disable unknown_function").is_err()); // Unknown function
     }
 }
 

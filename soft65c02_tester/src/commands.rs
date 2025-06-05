@@ -31,10 +31,28 @@ pub enum OutputToken {
     },
     Setup(Vec<String>),
     View(Vec<String>),
+    ControlAction {
+        function: ControllableFunction,
+        enabled: bool,
+    },
 }
 
 pub trait Command {
     fn execute(&self, registers: &mut Registers, memory: &mut Memory, symbols: &mut Option<SymbolTable>) -> AppResult<OutputToken>;
+}
+
+// Enum for controllable functions
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControllableFunction {
+    TraceLogging,
+}
+
+impl std::fmt::Display for ControllableFunction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ControllableFunction::TraceLogging => write!(f, "trace_logging"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -46,6 +64,8 @@ pub enum CliCommand {
     Registers(RegisterCommand),
     Run(RunCommand),
     Disassemble { start: usize, end: usize },
+    Enable(ControllableFunction),
+    Disable(ControllableFunction),
 }
 
 impl Command for CliCommand {
@@ -64,6 +84,14 @@ impl Command for CliCommand {
                 let output = disassembler.disassemble_range(*start, *end)?;
                 Ok(OutputToken::View(output))
             }
+            Self::Enable(function) => Ok(OutputToken::ControlAction { 
+                function: function.clone(), 
+                enabled: true 
+            }),
+            Self::Disable(function) => Ok(OutputToken::ControlAction { 
+                function: function.clone(), 
+                enabled: false 
+            }),
         }
     }
 }
@@ -1135,6 +1163,47 @@ mod memory_command_tests {
             }
             _ => panic!("Expected Setup token"),
         }
+    }
+}
+
+#[cfg(test)]
+mod control_command_tests {
+    use super::*;
+
+    #[test]
+    fn test_enable_command_execution() {
+        let command = CliCommand::Enable(ControllableFunction::TraceLogging);
+        let mut registers = Registers::new(0x0000);
+        let mut memory = Memory::new_with_ram();
+        let mut symbols = None;
+        
+        let result = command.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        
+        assert!(matches!(result, OutputToken::ControlAction { 
+            function: ControllableFunction::TraceLogging, 
+            enabled: true 
+        }));
+    }
+
+    #[test]
+    fn test_disable_command_execution() {
+        let command = CliCommand::Disable(ControllableFunction::TraceLogging);
+        let mut registers = Registers::new(0x0000);
+        let mut memory = Memory::new_with_ram();
+        let mut symbols = None;
+        
+        let result = command.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        
+        assert!(matches!(result, OutputToken::ControlAction { 
+            function: ControllableFunction::TraceLogging, 
+            enabled: false 
+        }));
+    }
+
+    #[test]
+    fn test_controllable_function_display() {
+        let function = ControllableFunction::TraceLogging;
+        assert_eq!(format!("{}", function), "trace_logging");
     }
 }
 

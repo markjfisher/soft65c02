@@ -8,7 +8,9 @@ instruction = { registers_instruction |
     assert_instruction |
     marker |
     symbols_instruction |
-    disassemble_instruction }
+    disassemble_instruction |
+    enable_instruction |
+    disable_instruction }
 
 marker = {^"marker" ~ "$$" ~ description ~ "$$" }
 
@@ -108,3 +110,8 @@ pointer_target = { memory_address ~ (address_offset)? }
 address_offset = { (plus_op | minus_op) ~ (value16 | value8) }
 plus_op = { "+" }
 minus_op = { "-" }
+
+// Enable/disable instruction rules
+enable_instruction = { ^"enable" ~ function_name }
+disable_instruction = { ^"disable" ~ function_name }
+function_name = { "trace_logging" }

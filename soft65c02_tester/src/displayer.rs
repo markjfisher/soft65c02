@@ -1,6 +1,6 @@
 use std::{io::Write, sync::mpsc::Receiver};
 use soft65c02_lib::{LogLine, AddressingMode};
-use crate::{AppResult, OutputToken, SymbolTable};
+use crate::{AppResult, OutputToken, SymbolTable, commands::ControllableFunction};
 
 struct LogLineFormatter<'a> {
     log_line: &'a LogLine,
@@ -220,13 +220,27 @@ pub trait Displayer {
     fn display(&mut self, receiver: Receiver<OutputToken>) -> AppResult<()>;
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct CliDisplayer<T>
 where
     T: Write,
 {
     output: T,
     verbose: bool,
+    trace_logging_enabled: bool,
+}
+
+impl<T> Default for CliDisplayer<T>
+where
+    T: Write + Default,
+{
+    fn default() -> Self {
+        Self {
+            output: T::default(),
+            verbose: false,
+            trace_logging_enabled: true,
+        }
+    }
 }
 
 impl<T> CliDisplayer<T>
@@ -234,7 +248,16 @@ where
     T: Write,
 {
     pub fn new(output: T, verbose: bool) -> Self {
-        Self { output, verbose }
+        Self { 
+            output, 
+            verbose, 
+            trace_logging_enabled: true  // Default to enabled
+        }
+    }
+
+    /// Check if trace logging should be shown (both verbose and trace logging must be enabled)
+    fn should_show_trace(&self) -> bool {
+        self.verbose && self.trace_logging_enabled
     }
 }
 
@@ -267,7 +290,7 @@ where
                     self.output
                         .write_all(format!("📄 {description}\n").as_bytes())?;
                 }
-                OutputToken::Run { loglines, symbols } | OutputToken::TerminatedRun { loglines, symbols, .. } if self.verbose => {
+                OutputToken::Run { loglines, symbols } | OutputToken::TerminatedRun { loglines, symbols, .. } if self.should_show_trace() => {
                     let mut content = String::new();
                     let show_total = loglines.len() > 1;
                     let total_cycles: u32 = if show_total {
@@ -294,6 +317,21 @@ where
                 OutputToken::Setup(lines) if self.verbose => {
                     self.output
                         .write_all(format!("🔧 {}\n", lines.join("\n")).as_bytes())?;
+                }
+                OutputToken::ControlAction { function, enabled } => {
+                    // Handle control actions with type safety
+                    match function {
+                        ControllableFunction::TraceLogging => {
+                            self.trace_logging_enabled = *enabled;
+                        }
+                    }
+                    
+                    // Show control action messages if verbose is enabled
+                    if self.verbose {
+                        let action = if *enabled { "enabled" } else { "disabled" };
+                        self.output
+                            .write_all(format!("🔧 {} {}\n", function, action).as_bytes())?;
+                    }
                 }
                 OutputToken::View(lines) if self.verbose => {
                     for line in lines {
@@ -641,6 +679,156 @@ mod tests {
             expected_instruction, output);
         // Should show termination reason
         assert!(output.contains("⛔ Run terminated: Cycle count limit exceeded"), "Missing termination reason");
+    }
+
+    #[test]
+    fn test_trace_logging_control() {
+        let mut buffer = Vec::new();
+        let mut displayer = CliDisplayer::new(&mut buffer, true);
+        let (sender, receiver) = channel();
+
+        // Initially trace logging should be enabled
+        assert!(displayer.should_show_trace());
+
+        // Send a disable trace_logging command
+        sender.send(OutputToken::ControlAction { 
+            function: ControllableFunction::TraceLogging, 
+            enabled: false 
+        }).unwrap();
+
+        // Send a run token that normally would be displayed
+        let log_line = LogLine {
+            address: 0x2000,
+            opcode: 0xa9,
+            mnemonic: "LDA".to_string(),
+            resolution: AddressingModeResolution {
+                target_address: None,
+                operands: vec![0x42],
+                addressing_mode: AddressingMode::Immediate([0x42]),
+            },
+            outcome: "(0x42)".to_string(),
+            cycles: 2,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x2002,
+            },
+        };
+        sender.send(OutputToken::Run { loglines: vec![log_line.clone()], symbols: None }).unwrap();
+
+        // Send an enable trace_logging command
+        sender.send(OutputToken::ControlAction { 
+            function: ControllableFunction::TraceLogging, 
+            enabled: true 
+        }).unwrap();
+
+        // Send another run token that should now be displayed
+        sender.send(OutputToken::Run { loglines: vec![log_line], symbols: None }).unwrap();
+        
+        drop(sender);
+        displayer.display(receiver).unwrap();
+
+        let output = String::from_utf8(buffer).unwrap();
+        
+        // Should show the control action messages (since verbose is true)
+        assert!(output.contains("🔧 trace_logging disabled"));
+        assert!(output.contains("🔧 trace_logging enabled"));
+        
+        // Should only show one run output (the second one, after re-enabling)
+        let run_count = output.matches("🚀 #0x2000:").count();
+        assert_eq!(run_count, 1, "Expected exactly one run output, got {}", run_count);
+    }
+
+    #[test]
+    fn test_trace_logging_disabled_by_default_when_not_verbose() {
+        let mut buffer = Vec::new();
+        let displayer = CliDisplayer::new(&mut buffer, false); // verbose = false
+
+        // Even though trace_logging_enabled is true, should_show_trace should be false
+        assert!(!displayer.should_show_trace());
+    }
+
+    #[test]
+    fn test_end_to_end_trace_control_integration() {
+        use crate::pest_parser::CliCommandParser;
+        use crate::commands::Command;
+        use soft65c02_lib::{Memory, Registers, AddressableIO};
+        use std::sync::mpsc::channel;
+
+        // Set up initial state
+        let mut buffer = Vec::new();
+        let mut displayer = CliDisplayer::new(&mut buffer, true);
+        let (sender, receiver) = channel();
+
+        // Simulate the complete flow: DSL → Parser → Command → OutputToken → Displayer
+        
+        // 1. Set up memory and registers (simulating what would happen in normal execution)
+        let mut memory = Memory::new_with_ram();
+        let mut registers = Registers::new(0x1000);
+        let mut symbols = None;
+        
+        // Write a simple LDA instruction
+        memory.write(0x1000, &[0xa9, 0x42]).unwrap(); // LDA #$42
+        
+        // 2. Test the full pipeline: "disable trace_logging"
+        let disable_cmd = CliCommandParser::from("disable trace_logging").unwrap();
+        let disable_token = disable_cmd.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        sender.send(disable_token).unwrap();
+        
+        // 3. Create a run token that should NOT be displayed due to disabled tracing
+        let log_line = LogLine {
+            address: 0x1000,
+            opcode: 0xa9,
+            mnemonic: "LDA".to_string(),
+            resolution: AddressingModeResolution {
+                target_address: None,
+                operands: vec![0x42],
+                addressing_mode: AddressingMode::Immediate([0x42]),
+            },
+            outcome: "(0x42)".to_string(),
+            cycles: 2,
+            registers: RegisterState {
+                accumulator: 0x42,
+                register_x: 0,
+                register_y: 0,
+                status: 0,
+                stack_pointer: 0xFF,
+                command_pointer: 0x1002,
+            },
+        };
+        sender.send(OutputToken::Run { loglines: vec![log_line.clone()], symbols: None }).unwrap();
+        
+        // 4. Test the full pipeline: "enable trace_logging"
+        let enable_cmd = CliCommandParser::from("enable trace_logging").unwrap();
+        let enable_token = enable_cmd.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        sender.send(enable_token).unwrap();
+        
+        // 5. Create another run token that SHOULD be displayed due to re-enabled tracing
+        sender.send(OutputToken::Run { loglines: vec![log_line], symbols: None }).unwrap();
+        
+        drop(sender);
+        
+        // Process all tokens through the displayer
+        displayer.display(receiver).unwrap();
+        
+        let output = String::from_utf8(buffer).unwrap();
+        
+        // Verify the integration worked correctly:
+        // 1. Should show control messages
+        assert!(output.contains("🔧 trace_logging disabled"), "Missing disable message");
+        assert!(output.contains("🔧 trace_logging enabled"), "Missing enable message");
+        
+        // 2. Should only show ONE trace (the one after re-enabling)
+        let trace_count = output.matches("🚀 #0x1000:").count();
+        assert_eq!(trace_count, 1, "Expected exactly one trace output after re-enabling, got {}", trace_count);
+        
+        // 3. Verify the actual trace content is correct
+        assert!(output.contains("LDA  #$42"), "Missing expected instruction trace");
+        
+        println!("Integration test output:\n{}", output);
     }
 
     #[test]
