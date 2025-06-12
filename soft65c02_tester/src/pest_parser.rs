@@ -79,6 +79,10 @@ impl<'a> ParserContext<'a> {
                 let inner = pair.clone().into_inner().next().unwrap();
                 self.parse_memory(&inner)
             }
+            Rule::memory_location => {
+                let inner = pair.clone().into_inner().next().unwrap();
+                self.parse_memory(&inner)
+            }
             Rule::hex_address => {
                 let hex_str = &pair.as_str()[3..]; // Skip the "#0x" prefix
                 self.parse_hex(hex_str)
@@ -430,7 +434,7 @@ impl<'a> MemoryCommandParser<'a> {
         let bytes_node = pairs
             .next()
             .expect("There shall be some bytes to write to memory");
-        
+
         let bytes = match bytes_node.as_rule() {
             Rule::bytes => self.context.parse_hex_sequence(bytes_node.as_str())?,
             Rule::string_literal => {
@@ -438,7 +442,11 @@ impl<'a> MemoryCommandParser<'a> {
                 let str_content = &bytes_node.as_str()[1..bytes_node.as_str().len()-1];
                 self.context.parse_string_literal(str_content)
             }
-            _ => panic!("Expected bytes or string_literal in memory write")
+            Rule::memory_location => {
+                let address = self.context.parse_memory(&bytes_node)?;
+                vec![(address & 0xFF) as u8, (address >> 8) as u8]
+            }
+            _ => panic!("Expected bytes, string_literal, or memory_location in memory write")
         };
 
         Ok(MemoryCommand::Write { address, bytes })
@@ -722,6 +730,88 @@ mod memory_command_parser_tests {
     }
 
     #[test]
+    fn test_memory_write_with_memory_location() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "somewhere".to_string());
+        symbols.add_symbol(0x1234, "address".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        let input = "memory write $somewhere $address";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1000 && bytes == vec![0x34, 0x12])
+        );
+    }
+
+    #[test]
+    fn test_memory_write_with_string() {
+        let input = "memory write #0x1234 \"hello\"";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == b"hello".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_memory_write_with_string_escapes() {
+        let context = create_test_context();
+        
+        // Test null terminator
+        let input = "memory write #0x1234 \"hello\\0\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == b"hello\0".to_vec())
+        );
+
+        // Test other escape sequences
+        let input = "memory write #0x1234 \"hello\\n\\r\\t\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == b"hello\n\r\t".to_vec())
+        );
+
+        // Test escaped quotes and backslashes
+        let input = "memory write #0x1234 \"\\\"hello\\\\\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == b"\"hello\\".to_vec())
+        );
+    }
+
+    #[test]
     fn test_memory_load() {
         let input = "memory load #0x1000 \"script.txt\"";
         let context = create_test_context();
@@ -805,67 +895,6 @@ mod memory_command_parser_tests {
         assert!(PestParser::parse(Rule::target_name, "atari").is_ok());
         assert!(PestParser::parse(Rule::target_name, "apple").is_ok());
         assert!(PestParser::parse(Rule::target_name, "invalid_target").is_err());
-    }
-
-    #[test]
-    fn test_memory_write_with_string() {
-        let input = "memory write #0x1234 \"hello\"";
-        let context = create_test_context();
-        let pairs = PestParser::parse(Rule::memory_instruction, input)
-            .unwrap()
-            .next()
-            .unwrap()
-            .into_inner();
-        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
-
-        assert!(
-            matches!(command, MemoryCommand::Write { address, bytes } 
-                if address == 0x1234 && bytes == b"hello".to_vec())
-        );
-    }
-
-    #[test]
-    fn test_memory_write_with_string_escapes() {
-        let context = create_test_context();
-        
-        // Test null terminator
-        let input = "memory write #0x1234 \"hello\\0\"";
-        let pairs = PestParser::parse(Rule::memory_instruction, input)
-            .unwrap()
-            .next()
-            .unwrap()
-            .into_inner();
-        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
-        assert!(
-            matches!(command, MemoryCommand::Write { address, bytes } 
-                if address == 0x1234 && bytes == b"hello\0".to_vec())
-        );
-
-        // Test other escape sequences
-        let input = "memory write #0x1234 \"hello\\n\\r\\t\"";
-        let pairs = PestParser::parse(Rule::memory_instruction, input)
-            .unwrap()
-            .next()
-            .unwrap()
-            .into_inner();
-        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
-        assert!(
-            matches!(command, MemoryCommand::Write { address, bytes } 
-                if address == 0x1234 && bytes == b"hello\n\r\t".to_vec())
-        );
-
-        // Test escaped quotes and backslashes
-        let input = "memory write #0x1234 \"\\\"hello\\\\\"";
-        let pairs = PestParser::parse(Rule::memory_instruction, input)
-            .unwrap()
-            .next()
-            .unwrap()
-            .into_inner();
-        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
-        assert!(
-            matches!(command, MemoryCommand::Write { address, bytes } 
-                if address == 0x1234 && bytes == b"\"hello\\".to_vec())
-        );
     }
 
     #[test]
@@ -3451,5 +3480,18 @@ mod parser_context_tests {
         println!("\nParsed condition structure:\n{}", print_expr(&output, 0));
 
 
+    }
+
+    #[test]
+    fn test_parse_memory_with_memory_location() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1000, "somewhere".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        let addr = context.parse_memory(&PestParser::parse(Rule::memory_location, "$somewhere")
+            .unwrap()
+            .next()
+            .unwrap())
+            .unwrap();
+        assert_eq!(addr, 0x1000);
     }
 }

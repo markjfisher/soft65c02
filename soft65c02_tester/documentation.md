@@ -70,6 +70,42 @@ Combined with symbols, you can write memory to named addresses with following:
 memory write $main "hello, world\0"
 ```
 
+You can also write a memory location's address as two bytes (in little-endian format):
+
+```
+memory write $destination $src_address
+```
+
+This writes the 16-bit address value to memory. For example, if `$src_address` is `0x1234`, it will write `0x34` followed by `0x12` to 2 bytes located at `$destination`. This is particularly useful for setting up pointers and jump tables. The address can include offsets:
+
+```
+memory write $jump_table $handler+0x20   $$write address of handler+0x20 to jump_table$$
+```
+
+#### memory show
+
+The `memory show` command displays a formatted hex dump of memory. It takes a location and length, with an optional description:
+
+```
+memory show #0x1000 0x10           $$show 16 bytes starting at 0x1000$$
+memory show $data 0x100            $$show 256 bytes starting at symbol 'data'$$
+memory show $array+2 0x08          $$show 8 bytes with offset$$
+memory show #0x2000 0x20 $$cache$$ $$show 32 bytes with description$$
+```
+
+The output is formatted as a hex dump with both hex values and ASCII representation (where printable). For example:
+
+```
+📝 cache:
+2000 : 48 65 6c 6c 6f 2c 20 77 6f 72 6c 64 21 00 00 00 | Hello, world!...
+2010 : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 | ................ 
+```
+
+The command supports:
+- Direct hex addresses or symbols with optional offsets
+- Length in hex (1-4 digits)
+- Optional description in `$$description$$` format
+
 #### memory fill
 
 The `memory fill` command allows filling a range of memory with a specific value.
