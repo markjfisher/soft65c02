@@ -60,7 +60,7 @@ NOT_OP = { ^"NOT" }
 boolean = { ^"true" | ^"false" }
 comparison = { comparison16 | comparison8 | comparison_cycle }
 comparison16 = _{ location16 ~ standard_operator ~ (value16 | symbol_reference) }
-comparison8 = _{ location8 ~ standard_operator ~ (value8 | symbol_reference) }
+comparison8 = _{ location8 ~ standard_operator ~ (value8 | symbol_reference | symbol_byte_reference) }
 comparison_cycle = _{ location_cycle ~ standard_operator ~ value16 }
 
 // Memory sequence and offset rules
@@ -78,6 +78,9 @@ location_cycle = _{ register_cycle }
 hex_address = @{ "#0x" ~ ASCII_HEX_DIGIT{1,4} }
 hex_length = @{ "0x" ~ ASCII_HEX_DIGIT{1,4} }
 symbol_reference = { "$" ~ symbol_name }
+symbol_byte_reference = { symbol_low_byte | symbol_high_byte }
+symbol_low_byte = { "<" ~ "$" ~ symbol_name }
+symbol_high_byte = { ">" ~ "$" ~ symbol_name }
 symbol_name = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 
 register16 = { "CP" }

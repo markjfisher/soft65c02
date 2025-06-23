@@ -359,6 +359,36 @@ impl<'a> ParserContext<'a> {
                     return Err(anyhow!("Symbol table not available for resolving '{}'", symbol_name));
                 }
             },
+            Rule::symbol_byte_reference => {
+                let inner = rh_node.clone().into_inner().next().unwrap();
+                match inner.as_rule() {
+                    Rule::symbol_low_byte => {
+                        let symbol_name = &inner.as_str()[2..]; // Skip the "<$" prefix
+                        if let Some(symbols) = &self.symbols {
+                            if let Some(addr) = symbols.get_address(symbol_name) {
+                                Source::Value((addr as usize) & 0xFF) // Low byte
+                            } else {
+                                return Err(anyhow!("Symbol '{}' not found", symbol_name));
+                            }
+                        } else {
+                            return Err(anyhow!("Symbol table not available for resolving '{}'", symbol_name));
+                        }
+                    },
+                    Rule::symbol_high_byte => {
+                        let symbol_name = &inner.as_str()[2..]; // Skip the ">$" prefix
+                        if let Some(symbols) = &self.symbols {
+                            if let Some(addr) = symbols.get_address(symbol_name) {
+                                Source::Value((addr as usize) >> 8) // High byte
+                            } else {
+                                return Err(anyhow!("Symbol '{}' not found", symbol_name));
+                            }
+                        } else {
+                            return Err(anyhow!("Symbol table not available for resolving '{}'", symbol_name));
+                        }
+                    },
+                    v => panic!("unexpected symbol byte reference type '{:?}'", v),
+                }
+            },
             v => panic!("unexpected node '{:?}' in comparison", v),
         };
 
@@ -2647,6 +2677,116 @@ mod assert_parser_tests {
         } else {
             panic!("Expected Equal expression, got {:?}", command.condition);
         }
+    }
+
+    #[test]
+    fn test_assert_with_symbol_byte_references() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1234, "test_str1".to_string());
+        let context = ParserContext::new(Some(&symbols));
+
+        // Test low byte reference with register
+        let pairs = PestParser::parse(Rule::assert_instruction, "assert A = <$test_str1 $$low byte test$$")
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        if let BooleanExpression::Equal(lh, rh) = command.condition {
+            assert_eq!(lh, Source::Register(RegisterSource::Accumulator));
+            assert_eq!(rh, Source::Value(0x34)); // Low byte of 0x1234
+        } else {
+            panic!("Expected Equal assertion with low byte");
+        }
+
+        // Test high byte reference with register
+        let pairs = PestParser::parse(Rule::assert_instruction, "assert X = >$test_str1 $$high byte test$$")
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        if let BooleanExpression::Equal(lh, rh) = command.condition {
+            assert_eq!(lh, Source::Register(RegisterSource::RegisterX));
+            assert_eq!(rh, Source::Value(0x12)); // High byte of 0x1234
+        } else {
+            panic!("Expected Equal assertion with high byte");
+        }
+    }
+
+    #[test]
+    fn test_assert_with_symbol_byte_references_memory_comparison() {
+        let mut symbols = test_utils::setup_test_symbols();
+        symbols.add_symbol(0x1234, "test_str1".to_string());
+        symbols.add_symbol(0x2000, "cps_strings_a".to_string());
+        symbols.add_symbol(0x2001, "cps_strings_x".to_string());
+        let context = ParserContext::new(Some(&symbols));
+
+        // Test the original user example for low byte
+        let pairs = PestParser::parse(Rule::assert_instruction, "assert $cps_strings_a = <$test_str1 $$t00: cputs called with correct pointer (low byte)$$")
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        if let BooleanExpression::Equal(lh, rh) = command.condition {
+            assert_eq!(lh, Source::Memory(0x2000));
+            assert_eq!(rh, Source::Value(0x34)); // Low byte of 0x1234
+        } else {
+            panic!("Expected Equal assertion with memory and low byte");
+        }
+
+        // Test the original user example for high byte
+        let pairs = PestParser::parse(Rule::assert_instruction, "assert $cps_strings_x = >$test_str1 $$t00: cputs called with correct pointer (high byte)$$")
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        if let BooleanExpression::Equal(lh, rh) = command.condition {
+            assert_eq!(lh, Source::Memory(0x2001));
+            assert_eq!(rh, Source::Value(0x12)); // High byte of 0x1234
+        } else {
+            panic!("Expected Equal assertion with memory and high byte");
+        }
+    }
+
+    #[test]
+    fn test_symbol_byte_references_with_missing_symbol() {
+        let context = ParserContext::new(None);
+
+        // Test that missing symbol table produces error
+        let pairs = PestParser::parse(Rule::assert_instruction, "assert A = <$missing_symbol $$error test$$")
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+
+        let result = AssertCommandParser::from_pairs(pairs, &context);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Symbol table not available"));
+
+        // Test that missing symbol produces error
+        let symbols = test_utils::setup_test_symbols();
+        let context = ParserContext::new(Some(&symbols));
+
+        let pairs = PestParser::parse(Rule::assert_instruction, "assert A = >$nonexistent $$error test$$")
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+
+        let result = AssertCommandParser::from_pairs(pairs, &context);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Symbol 'nonexistent' not found"));
     }
 }
 

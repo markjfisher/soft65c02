@@ -61,7 +61,7 @@ where
     pub fn new(iterator: Lines<B>) -> Self {
         Self { 
             iterator,
-            symbols: None,
+            symbols: Some(SymbolTable::new()), // Initialize with empty symbol table
         }
     }
 }

@@ -4,7 +4,7 @@ use std::fmt::{self};
 
 use crate::{AppResult, utils};
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum RegisterSource {
     Accumulator,
     RegisterX,
@@ -132,7 +132,7 @@ mod assignment_tests {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Source {
     Register(RegisterSource),
     Memory(usize),

@@ -193,6 +193,28 @@ symbols add RUNADL=0x02e0
 symbols add RUNADH=0x02e1
 ```
 
+#### Symbol byte references
+
+When working with 16-bit addresses, you can extract the low or high byte of a symbol's address value using special syntax:
+
+- `<$symbol` - Gets the low byte (LSB) of the symbol's address
+- `>$symbol` - Gets the high byte (MSB) of the symbol's address
+
+Examples:
+```
+symbols add test_str1=0x1234
+
+// These assertions test that memory locations contain the correct address bytes
+assert $cps_strings_a = <$test_str1  $$t00: cputs called with correct pointer (low byte)$$
+assert $cps_strings_x = >$test_str1  $$t00: cputs called with correct pointer (high byte)$$
+```
+
+In this example:
+- `<$test_str1` evaluates to `0x34` (low byte of 0x1234)
+- `>$test_str1` evaluates to `0x12` (high byte of 0x1234)
+
+This is particularly useful when testing subroutines that expect pointer arguments passed in separate registers or memory locations, which is common in 6502/65C02 programming.
+
 #### Using symbols with registers
 
 Symbol values also work with setting registers, they must be a single byte for registers, otherwise the command will fail.

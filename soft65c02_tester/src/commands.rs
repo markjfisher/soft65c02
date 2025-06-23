@@ -372,12 +372,14 @@ impl Command for MemoryCommand {
                 vec![format!("{} symbols loaded", count)]
             }
             Self::AddSymbol { name, value } => {
-                if let Some(symtable) = symbols {
-                    symtable.add_symbol(*value, name.clone());
-                    vec![format!("Symbol {} added with value 0x{:04X}", name, value)]
-                } else {
-                    vec!["No symbol table available".to_string()]
+                // Initialize symbol table if it doesn't exist
+                if symbols.is_none() {
+                    *symbols = Some(SymbolTable::new());
                 }
+                // This unwrap is now safe since we ensure symbols exists above
+                let symtable = symbols.as_mut().unwrap();
+                symtable.add_symbol(*value, name.clone());
+                vec![format!("Symbol {} added with value 0x{:04X}", name, value)]
             }
             Self::RemoveSymbol { name } => {
                 if let Some(symtable) = symbols {
@@ -1162,6 +1164,30 @@ mod memory_command_tests {
                 assert_eq!(lines[0], expected);
             }
             _ => panic!("Expected Setup token"),
+        }
+    }
+
+    #[test]
+    fn test_add_symbol_with_no_existing_table() {
+        let command = MemoryCommand::AddSymbol { 
+            name: "test_symbol".to_string(), 
+            value: 0x1234 
+        };
+        let mut registers = Registers::new(0x0000);
+        let mut memory = Memory::new_with_ram();
+        let mut symbols = None; // Start with no symbol table
+        
+        let token = command.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+        
+        // Verify the symbol table was created and symbol added
+        assert!(symbols.is_some());
+        let symbol_table = symbols.as_ref().unwrap();
+        assert_eq!(symbol_table.get_address("test_symbol"), Some(0x1234));
+        
+        // Verify the output message
+        assert!(matches!(token, OutputToken::Setup(ref lines) if lines.len() == 1));
+        if let OutputToken::Setup(lines) = token {
+            assert!(lines[0].contains("Symbol test_symbol added with value 0x1234"));
         }
     }
 }
