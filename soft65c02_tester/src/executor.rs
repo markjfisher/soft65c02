@@ -1,5 +1,5 @@
 use std::{
-    io::{BufRead, Lines},
+    io::BufRead,
     sync::mpsc::Sender,
 };
 
@@ -46,90 +46,94 @@ impl ExecutionRound {
 }
 
 #[derive(Debug)]
-pub struct CommandIterator<B>
-where
-    B: BufRead,
-{
-    iterator: Lines<B>,
+pub struct CommandIterator {
+    lines: std::vec::IntoIter<String>,
     symbols: Option<SymbolTable>,
 }
 
-impl<B> CommandIterator<B>
-where
-    B: BufRead,
-{
-    pub fn new(iterator: Lines<B>) -> Self {
+impl CommandIterator {
+    pub fn new_from_string(input: &str) -> Self {
+        // Split input into logical commands by looking for complete statements
+        let lines: Vec<String> = Self::split_into_commands(input);
+        
         Self { 
-            iterator,
+            lines: lines.into_iter(),
             symbols: Some(SymbolTable::new()), // Initialize with empty symbol table
         }
     }
+    
+    fn split_into_commands(input: &str) -> Vec<String> {
+        let mut commands = Vec::new();
+        let mut current_command = String::new();
+        let mut in_string = false;
+        let mut escape_next = false;
+        
+        for line in input.lines() {
+            let trimmed = line.trim();
+            
+            // Skip empty lines and comments when not in a string
+            if !in_string && (trimmed.is_empty() || trimmed.starts_with("//")) {
+                continue;
+            }
+            
+            if !current_command.is_empty() {
+                current_command.push('\n');
+            }
+            current_command.push_str(line);
+            
+            // Check if we're in a string literal
+            for ch in line.chars() {
+                if escape_next {
+                    escape_next = false;
+                    continue;
+                }
+                
+                match ch {
+                    '"' => in_string = !in_string,
+                    '\\' if in_string => escape_next = true,
+                    _ => {}
+                }
+            }
+            
+            // If we're not in a string, this command is complete
+            if !in_string {
+                commands.push(current_command.trim().to_string());
+                current_command.clear();
+            }
+        }
+        
+        // Handle any remaining incomplete command
+        if !current_command.trim().is_empty() {
+            commands.push(current_command.trim().to_string());
+        }
+        
+        commands
+    }
 }
 
-impl<B> Iterator for CommandIterator<B>
-where
-    B: BufRead,
-{
+impl Iterator for CommandIterator {
     type Item = AppResult<CliCommand>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Try to get the next line
-        let mut accumulated_line = match self.iterator.next() {
-            Some(Ok(line)) => line,
-            Some(Err(e)) => return Some(Err(anyhow!(e))),
-            None => return None,
-        };
-
-        // Keep accumulating lines until we can parse a complete command
-        let mut attempts = 0;
-        loop {
-            match CliCommandParser::from_with_context(&accumulated_line, crate::pest_parser::ParserContext::new(self.symbols.as_ref())) {
-                Ok(cmd) => {
-                    // Successfully parsed a command, update symbols if needed
-                    match &cmd {
-                        CliCommand::Memory(crate::commands::MemoryCommand::LoadSymbols { symbols }) => {
-                            self.symbols = Some(symbols.clone());
-                        }
-                        CliCommand::Memory(crate::commands::MemoryCommand::AddSymbol { name, value }) => {
-                            if let Some(symtable) = &mut self.symbols {
-                                symtable.add_symbol(*value, name.clone());
-                            }
-                        }
-                        _ => {}
+        let command_text = self.lines.next()?;
+        
+        match CliCommandParser::from_with_context(&command_text, crate::pest_parser::ParserContext::new(self.symbols.as_ref())) {
+            Ok(cmd) => {
+                // Successfully parsed a command, update symbols if needed
+                match &cmd {
+                    CliCommand::Memory(crate::commands::MemoryCommand::LoadSymbols { symbols }) => {
+                        self.symbols = Some(symbols.clone());
                     }
-                    return Some(Ok(cmd));
-                }
-                Err(e) => {
-                    // Failed to parse - only try to accumulate more lines if:
-                    // 1. This looks like an incomplete string (contains opening quote)
-                    // 2. We haven't tried too many times
-                    let error_str = e.to_string();
-                    let might_be_incomplete_string = accumulated_line.contains('"') && 
-                                                   (error_str.contains("string_char") || 
-                                                    error_str.contains("string_literal") ||
-                                                    error_str.contains("expected instruction"));
-                    
-                    if might_be_incomplete_string && attempts < 100 {
-                        // Try to get the next line and append it
-                        match self.iterator.next() {
-                            Some(Ok(next_line)) => {
-                                accumulated_line.push('\n');
-                                accumulated_line.push_str(&next_line);
-                                attempts += 1;
-                                // Continue the loop to try parsing again
-                            }
-                            Some(Err(e)) => return Some(Err(anyhow!(e))),
-                            None => {
-                                // No more lines, return the original parsing error
-                                return Some(Err(anyhow!(e)));
-                            }
+                    CliCommand::Memory(crate::commands::MemoryCommand::AddSymbol { name, value }) => {
+                        if let Some(symtable) = &mut self.symbols {
+                            symtable.add_symbol(*value, name.clone());
                         }
-                    } else {
-                        // Not a string issue or too many attempts, return the error
-                        return Some(Err(anyhow!(e)));
                     }
+                    _ => {}
                 }
+                Some(Ok(cmd))
             }
+            Err(e) => Some(Err(anyhow!(e)))
         }
     }
 }
@@ -173,12 +177,16 @@ impl Executor {
     /// The execution stops if the buffer is exhausted. If an assertion fails
     /// and the configuration allows it, the execution stops until the next
     /// marker.
-    pub fn run<T: BufRead>(self, buffer: T, sender: Sender<OutputToken>) -> AppResult<()> {
+    pub fn run<T: BufRead>(self, mut buffer: T, sender: Sender<OutputToken>) -> AppResult<()> {
         let mut round = ExecutionRound::default();
         let mut failed: usize = 0;
         let mut had_terminated_run = false;
 
-        for result in CommandIterator::new(buffer.lines()) {
+        // Read entire input at once to properly handle multi-line strings
+        let mut input = String::new();
+        buffer.read_to_string(&mut input)?;
+        
+        for result in CommandIterator::new_from_string(&input) {
             let command = match result {
                 Err(e) if !self.configuration.ignore_parse_error => return Err(anyhow!(e)),
                 Err(_) => continue,
