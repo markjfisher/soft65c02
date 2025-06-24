@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Write},
     path::PathBuf,
     sync::mpsc::channel,
 };
@@ -65,7 +65,7 @@ impl CommandLineArguments {
 fn main() -> Result<()> {
     let parameters = CommandLineArguments::parse();
 
-    let mut input_buffer: Box<dyn BufRead> = if parameters.read_from_standard_input() {
+    let input_buffer: Box<dyn BufRead> = if parameters.read_from_standard_input() {
         Box::new(std::io::stdin().lock())
     } else {
         Box::new(BufReader::new(File::open(
@@ -73,10 +73,7 @@ fn main() -> Result<()> {
         )?))
     };
     if parameters.parse {
-        let mut input = String::new();
-        input_buffer.read_to_string(&mut input)?;
-        
-        let result: AppResult<Vec<CliCommand>> = CommandIterator::new_from_string(&input)
+        let result: AppResult<Vec<CliCommand>> = CommandIterator::new(input_buffer.lines())
             .map(|result| result.map_err(anyhow::Error::from))
             .collect();
 

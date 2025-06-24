@@ -1,5 +1,5 @@
 use std::{
-    io::BufRead,
+    io::{BufRead, Lines},
     sync::mpsc::Sender,
 };
 
@@ -46,78 +46,95 @@ impl ExecutionRound {
 }
 
 #[derive(Debug)]
-pub struct CommandIterator {
-    lines: std::vec::IntoIter<String>,
+pub struct CommandIterator<B>
+where
+    B: BufRead,
+{
+    iterator: Lines<B>,
     symbols: Option<SymbolTable>,
+    state: StreamingState,
 }
 
-impl CommandIterator {
-    pub fn new_from_string(input: &str) -> Self {
-        // Split input into logical commands by looking for complete statements
-        let lines: Vec<String> = Self::split_into_commands(input);
-        
+#[derive(Debug, Default)]
+struct StreamingState {
+    accumulated_command: String,
+    inside_string_literal: bool,
+    next_char_escaped: bool,
+}
+
+impl<B> CommandIterator<B>
+where
+    B: BufRead,
+{
+    pub fn new(iterator: Lines<B>) -> Self {
         Self { 
-            lines: lines.into_iter(),
-            symbols: Some(SymbolTable::new()), // Initialize with empty symbol table
+            iterator,
+            symbols: Some(SymbolTable::new()),
+            state: StreamingState::default(),
         }
     }
-    
-    fn split_into_commands(input: &str) -> Vec<String> {
-        let mut commands = Vec::new();
-        let mut current_command = String::new();
-        let mut in_string = false;
-        let mut escape_next = false;
-        
-        for line in input.lines() {
-            let trimmed = line.trim();
-            
-            // Skip empty lines and comments when not in a string
-            if !in_string && (trimmed.is_empty() || trimmed.starts_with("//")) {
-                continue;
-            }
-            
-            if !current_command.is_empty() {
-                current_command.push('\n');
-            }
-            current_command.push_str(line);
-            
-            // Check if we're in a string literal
-            for ch in line.chars() {
-                if escape_next {
-                    escape_next = false;
-                    continue;
-                }
-                
-                match ch {
-                    '"' => in_string = !in_string,
-                    '\\' if in_string => escape_next = true,
-                    _ => {}
-                }
-            }
-            
-            // If we're not in a string, this command is complete
-            if !in_string {
-                commands.push(current_command.trim().to_string());
-                current_command.clear();
-            }
-        }
-        
-        // Handle any remaining incomplete command
-        if !current_command.trim().is_empty() {
-            commands.push(current_command.trim().to_string());
-        }
-        
-        commands
-    }
+
 }
 
-impl Iterator for CommandIterator {
+impl<B> Iterator for CommandIterator<B>
+where
+    B: BufRead,
+{
     type Item = AppResult<CliCommand>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let command_text = self.lines.next()?;
-        
-        match CliCommandParser::from_with_context(&command_text, crate::pest_parser::ParserContext::new(self.symbols.as_ref())) {
+        loop {
+            // Try to get the next line
+            let line = match self.iterator.next() {
+                Some(Ok(line)) => line,
+                Some(Err(e)) => return Some(Err(anyhow!(e))),
+                None => {
+                    // End of input - if we have a partial command, try to parse it
+                    if !self.state.accumulated_command.trim().is_empty() {
+                        let command = self.state.accumulated_command.trim().to_string();
+                        self.state.accumulated_command.clear();
+                        return Some(self.parse_command(&command));
+                    }
+                    return None;
+                }
+            };
+
+            let trimmed = line.trim();
+            
+            // Skip empty lines and comments when not in a string
+            if !self.state.inside_string_literal && (trimmed.is_empty() || trimmed.starts_with("//")) {
+                continue;
+            }
+            
+            // Add to current command
+            if !self.state.accumulated_command.is_empty() {
+                self.state.accumulated_command.push('\n');
+            }
+            self.state.accumulated_command.push_str(&line);
+            
+            // Update string state
+            self.update_string_state(&line);
+            
+            // If we're not in a string, this command is complete
+            if !self.state.inside_string_literal {
+                let command = self.state.accumulated_command.trim().to_string();
+                self.state.accumulated_command.clear();
+                if !command.is_empty() {
+                    return Some(self.parse_command(&command));
+                }
+            }
+            // If we're still in a string, continue accumulating lines
+        }
+    }
+    
+}
+
+impl<B> CommandIterator<B>
+where
+    B: BufRead,
+{
+    fn parse_command(&mut self, command_text: &str) -> AppResult<CliCommand> {
+        match CliCommandParser::from_with_context(command_text, crate::pest_parser::ParserContext::new(self.symbols.as_ref())) {
             Ok(cmd) => {
                 // Successfully parsed a command, update symbols if needed
                 match &cmd {
@@ -131,9 +148,24 @@ impl Iterator for CommandIterator {
                     }
                     _ => {}
                 }
-                Some(Ok(cmd))
+                Ok(cmd)
             }
-            Err(e) => Some(Err(anyhow!(e)))
+            Err(e) => Err(anyhow!(e))
+        }
+    }
+    
+    fn update_string_state(&mut self, line: &str) {
+        for ch in line.chars() {
+            if self.state.next_char_escaped {
+                self.state.next_char_escaped = false;
+                continue;
+            }
+            
+            match ch {
+                '"' => self.state.inside_string_literal = !self.state.inside_string_literal,
+                '\\' if self.state.inside_string_literal => self.state.next_char_escaped = true,
+                _ => {}
+            }
         }
     }
 }
@@ -177,16 +209,12 @@ impl Executor {
     /// The execution stops if the buffer is exhausted. If an assertion fails
     /// and the configuration allows it, the execution stops until the next
     /// marker.
-    pub fn run<T: BufRead>(self, mut buffer: T, sender: Sender<OutputToken>) -> AppResult<()> {
+    pub fn run<T: BufRead>(self, buffer: T, sender: Sender<OutputToken>) -> AppResult<()> {
         let mut round = ExecutionRound::default();
         let mut failed: usize = 0;
         let mut had_terminated_run = false;
 
-        // Read entire input at once to properly handle multi-line strings
-        let mut input = String::new();
-        buffer.read_to_string(&mut input)?;
-        
-        for result in CommandIterator::new_from_string(&input) {
+        for result in CommandIterator::new(buffer.lines()) {
             let command = match result {
                 Err(e) if !self.configuration.ignore_parse_error => return Err(anyhow!(e)),
                 Err(_) => continue,
