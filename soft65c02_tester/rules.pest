@@ -69,7 +69,7 @@ memory_location = { memory_address ~ (address_offset)? }
 memory_address = { hex_address | symbol_reference }
 
 string_literal = { "\"" ~ string_char* ~ "\"" }
-string_char = { !("\"" | "\\") ~ ASCII | "\\" ~ ("\"" | "\\" | "n" | "r" | "t" | "0") }
+string_char = { !("\"" | "\\") ~ ASCII | "\\" ~ ("\"" | "\\" | "n" | "r" | "t" | "0" | "x" ~ ASCII_HEX_DIGIT{2} | ("\n" | "\r\n" | "\r")) }
 
 location16 = _{ register16 }
 location8 = _{ memory_location | register8 }

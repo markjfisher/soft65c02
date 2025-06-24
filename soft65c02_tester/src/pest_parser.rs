@@ -181,6 +181,28 @@ impl<'a> ParserContext<'a> {
                         '0' => bytes.push(0),
                         '"' => bytes.push(b'"'),
                         '\\' => bytes.push(b'\\'),
+                        'x' => {
+                            // Parse hex escape sequence \xAA
+                            let hex1 = chars.next().expect("hex escape sequence should have two hex digits after \\x");
+                            let hex2 = chars.next().expect("hex escape sequence should have two hex digits after \\x");
+                            let hex_str = format!("{}{}", hex1, hex2);
+                            match u8::from_str_radix(&hex_str, 16) {
+                                Ok(byte_val) => bytes.push(byte_val),
+                                Err(_) => panic!("invalid hex escape sequence '\\x{}'", hex_str),
+                            }
+                        }
+                        '\n' => {
+                            // Line continuation: backslash followed by newline
+                            // Skip both the backslash and the newline - don't add anything to bytes
+                        }
+                        '\r' => {
+                            // Handle Windows-style line endings (\r\n)
+                            // Check if the next character is \n and consume it too
+                            if chars.as_str().starts_with('\n') {
+                                chars.next(); // consume the \n
+                            }
+                            // Skip the line continuation - don't add anything to bytes
+                        }
                         c => panic!("unknown escape sequence '\\{}'", c),
                     }
                 }
@@ -838,6 +860,125 @@ mod memory_command_parser_tests {
         assert!(
             matches!(command, MemoryCommand::Write { address, bytes } 
                 if address == 0x1234 && bytes == b"\"hello\\".to_vec())
+        );
+    }
+
+    #[test]
+    fn test_memory_write_with_hex_escape_sequences() {
+        let context = create_test_context();
+        
+        // Test basic hex escape sequences
+        let input = "memory write #0x1234 \"\\xFF\\x00\\x42\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == vec![0xFF, 0x00, 0x42])
+        );
+
+        // Test mixed text and hex escape sequences
+        let input = "memory write #0x1234 \"hello\\x00world\\x0A\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        let expected = b"hello\0world\x0A".to_vec();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == expected)
+        );
+
+        // Test hex escape sequences with both cases
+        let input = "memory write #0x1234 \"\\xAB\\xcd\\x12\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == vec![0xAB, 0xCD, 0x12])
+        );
+
+        // Test mixing hex escapes with standard escapes
+        let input = "memory write #0x1234 \"data:\\x0A\\t\\xFF\\n\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        let expected = b"data:\x0A\t\xFF\n".to_vec();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == expected)
+        );
+    }
+
+    #[test]
+    fn test_memory_write_with_line_continuation() {
+        let context = create_test_context();
+        
+        // Test basic line continuation
+        let input = "memory write #0x1234 \"hello\\\nworld\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1234 && bytes == b"helloworld".to_vec())
+        );
+
+        // Test multi-line with line continuations (simulating screen layout)
+        let input = "memory write #0x1000 \"+-------+\\\n| Hello |\\\n+-------+\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        let expected = b"+-------+| Hello |+-------+".to_vec();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x1000 && bytes == expected)
+        );
+
+        // Test line continuation with spaces preserved
+        let input = "memory write #0x2000 \"start \\\n  middle \\\n    end\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        let expected = b"start   middle     end".to_vec();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x2000 && bytes == expected)
+        );
+
+        // Test mixing line continuation with other escape sequences
+        let input = "memory write #0x3000 \"line1\\\n\\ttab\\\n\\nend\"";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        let expected = b"line1\ttab\nend".to_vec();
+        assert!(
+            matches!(command, MemoryCommand::Write { address, bytes } 
+                if address == 0x3000 && bytes == expected)
         );
     }
 
@@ -2279,6 +2420,134 @@ mod assert_parser_tests {
                     Source::Memory(addr),
                     bytes
                 ) if addr == 0x8000 && bytes == b"hello".to_vec()
+            )
+        );
+    }
+
+    #[test]
+    fn test_assert_memory_sequence_with_hex_escape_sequences() {
+        let context = create_test_context();
+        
+        // Test basic hex escape sequences in assertions
+        let input = "assert #0x8000 ~ \"\\xFF\\x00\\x42\" $$check memory sequence with hex escapes$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "check memory sequence with hex escapes");
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x8000 && bytes == vec![0xFF, 0x00, 0x42]
+            )
+        );
+
+        // Test mixed text and hex escape sequences in assertions
+        let input = "assert #0x8000 ~ \"data:\\x0A\\xFF\\x00end\" $$check mixed string with hex escapes$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "check mixed string with hex escapes");
+        let expected = b"data:\x0A\xFF\x00end".to_vec();
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x8000 && bytes == expected
+            )
+        );
+
+        // Test mixing hex escapes with standard escapes
+        let input = "assert #0x8000 ~ \"\\x41\\n\\t\\xFF\\0\" $$check mixed escape sequences$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "check mixed escape sequences");
+        let expected = b"A\n\t\xFF\0".to_vec();
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x8000 && bytes == expected
+            )
+        );
+    }
+
+    #[test]
+    fn test_assert_memory_sequence_with_line_continuation() {
+        let context = create_test_context();
+        
+        // Test basic line continuation in assertions
+        let input = "assert #0x8000 ~ \"hello\\\nworld\" $$check memory sequence with line continuation$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "check memory sequence with line continuation");
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x8000 && bytes == b"helloworld".to_vec()
+            )
+        );
+
+        // Test multi-line screen layout assertion
+        let input = "assert #0x8000 ~ \"+-------+\\\n| Hello |\\\n+-------+\" $$check screen layout$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "check screen layout");
+        let expected = b"+-------+| Hello |+-------+".to_vec();
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x8000 && bytes == expected
+            )
+        );
+
+        // Test mixing line continuation with escape sequences
+        let input = "assert #0x8000 ~ \"start\\\n\\t\\xFF\\\nend\" $$check mixed line continuation and escapes$$";
+        let pairs = PestParser::parse(Rule::assert_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = AssertCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert_eq!(command.comment, "check mixed line continuation and escapes");
+        let expected = b"start\t\xFFend".to_vec();
+        assert!(
+            matches!(command.condition,
+                BooleanExpression::MemorySequence(
+                    Source::Memory(addr),
+                    bytes
+                ) if addr == 0x8000 && bytes == expected
             )
         );
     }

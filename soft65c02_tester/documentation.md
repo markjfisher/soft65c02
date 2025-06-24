@@ -62,12 +62,21 @@ memory write #0x1234 0x(00,01,02,…)
 
 Write a slice of contiguous bytes at the given address.
 
-Additionally writing supports strings, including escaped chars `\t`, `\n`, `\r`, `\0`.
+Additionally writing supports strings, including escaped chars `\t`, `\n`, `\r`, `\0`, hexadecimal escape sequences `\xAA` where `AA` is a two-digit hex value (e.g., `\x0D`, `\xFF`), and line continuation with `\` at the end of a line.
 
 Combined with symbols, you can write memory to named addresses with following:
 
 ```
 memory write $main "hello, world\0"
+memory write #0x2000 "data:\x0A\xFF\x00"   $$mix text with hex values$$
+
+// Multi-line strings with line continuation
+memory write $screen_memory "\
++-------+\
+| Hello |\
++-------+"
+
+// Equivalent to: memory write $screen_memory "+-------+| Hello |+-------+"
 ```
 
 You can also write a memory location's address as two bytes (in little-endian format):
@@ -479,13 +488,25 @@ String literals are supported in both memory write, and assertions on byte seque
 Examples can be seen in the [test atari binary script](tests/test_atari.txt)
 
 ```
-// equivalent writes
+// equivalent writes with standard escape sequences
 memory write #0x1100 "abc\n\0def"
 memory write #0x1100 0x(61,62,63,0a,00,64,65,66)
+
+// using hex escape sequences for more control
+memory write #0x1200 "data:\x0A\xFF\x00end"
+memory write #0x1200 0x(64,61,74,61,3a,0a,ff,00,65,6e,64)
+
+// using line continuation for multi-line layouts
+memory write #0x1300 "\
++-------+\
+| Hello |\
++-------+"
 
 // equivalent assertions
 assert #0x1100 ~ "abc\n\0def"  $$string matches at location 0x1100 with string comparison$$
 assert #0x1100 ~ 0x(61,62,63,0a,00,64,65,66)  $$string matches at location 0x1100 with bytes comparison$$
+assert #0x1200 ~ "data:\x0A\xFF\x00end"  $$string with hex escapes matches$$
+assert #0x1300 ~ "+-------+| Hello |+-------+"  $$multi-line string matches$$
 ```
 
 ### Value Formats

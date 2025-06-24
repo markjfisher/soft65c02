@@ -73,12 +73,19 @@ where
     type Item = AppResult<CliCommand>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iterator.next().map(|result| {
-            result
-                .map_err(|e| anyhow!(e))
-                .and_then(|line| {
-                    let cmd = CliCommandParser::from_with_context(&line, crate::pest_parser::ParserContext::new(self.symbols.as_ref()))?;
-                    // If this command loaded or added symbols, update our state
+        // Try to get the next line
+        let mut accumulated_line = match self.iterator.next() {
+            Some(Ok(line)) => line,
+            Some(Err(e)) => return Some(Err(anyhow!(e))),
+            None => return None,
+        };
+
+        // Keep accumulating lines until we can parse a complete command
+        let mut attempts = 0;
+        loop {
+            match CliCommandParser::from_with_context(&accumulated_line, crate::pest_parser::ParserContext::new(self.symbols.as_ref())) {
+                Ok(cmd) => {
+                    // Successfully parsed a command, update symbols if needed
                     match &cmd {
                         CliCommand::Memory(crate::commands::MemoryCommand::LoadSymbols { symbols }) => {
                             self.symbols = Some(symbols.clone());
@@ -90,9 +97,40 @@ where
                         }
                         _ => {}
                     }
-                    Ok(cmd)
-                })
-        })
+                    return Some(Ok(cmd));
+                }
+                Err(e) => {
+                    // Failed to parse - only try to accumulate more lines if:
+                    // 1. This looks like an incomplete string (contains opening quote)
+                    // 2. We haven't tried too many times
+                    let error_str = e.to_string();
+                    let might_be_incomplete_string = accumulated_line.contains('"') && 
+                                                   (error_str.contains("string_char") || 
+                                                    error_str.contains("string_literal") ||
+                                                    error_str.contains("expected instruction"));
+                    
+                    if might_be_incomplete_string && attempts < 100 {
+                        // Try to get the next line and append it
+                        match self.iterator.next() {
+                            Some(Ok(next_line)) => {
+                                accumulated_line.push('\n');
+                                accumulated_line.push_str(&next_line);
+                                attempts += 1;
+                                // Continue the loop to try parsing again
+                            }
+                            Some(Err(e)) => return Some(Err(anyhow!(e))),
+                            None => {
+                                // No more lines, return the original parsing error
+                                return Some(Err(anyhow!(e)));
+                            }
+                        }
+                    } else {
+                        // Not a string issue or too many attempts, return the error
+                        return Some(Err(anyhow!(e)));
+                    }
+                }
+            }
+        }
     }
 }
 
