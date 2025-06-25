@@ -1,5 +1,5 @@
 WHITESPACE = _{ " " }
-COMMENT = _{ "//" ~ ANY* }
+COMMENT = _{ ("//" | ";") ~ ANY* }
 sentence = _{ SOI ~ instruction | COMMENT ~ EOI }
 
 instruction = { registers_instruction |

@@ -4,6 +4,27 @@
 
 The parser language description is available [here](rules.pest).
 
+### Comments
+
+Comments can be used to add explanations or temporarily disable instructions. Two comment styles are supported:
+
+```
+// Traditional C-style comments
+; Assembly-style comments
+```
+
+Comments can be used on their own lines:
+
+```
+// This is a comment
+; This is also a comment
+memory flush
+; Clear memory before test
+memory write #0x1234 0x(00,01,02)
+```
+
+Both comment styles consume the entire line from the comment marker to the end of the line. Empty lines and comment-only lines are ignored during execution.
+
 ### marker
 
 ```

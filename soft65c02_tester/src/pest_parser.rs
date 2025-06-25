@@ -3240,6 +3240,9 @@ mod cli_command_parser_test {
     fn test_code_comments() {
         let cli_command = CliCommandParser::from("// This is a comment").unwrap();
         assert!(matches!(cli_command, CliCommand::None));
+        
+        let cli_command = CliCommandParser::from("; This is also a comment").unwrap();
+        assert!(matches!(cli_command, CliCommand::None));
     }
 
     #[test]
