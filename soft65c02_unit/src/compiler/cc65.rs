@@ -13,6 +13,9 @@ pub struct CC65Compiler {
     include_paths: Vec<PathBuf>,
     asm_include_paths: Vec<PathBuf>,
     config_file: PathBuf,
+    c_flags: Vec<String>,
+    asm_flags: Vec<String>,
+    ld_flags: Vec<String>,
     verbose: bool,
     dry_run: bool,
     executor: Box<dyn Executor>,
@@ -25,6 +28,9 @@ impl Debug for CC65Compiler {
             .field("include_paths", &self.include_paths)
             .field("asm_include_paths", &self.asm_include_paths)
             .field("config_file", &self.config_file)
+            .field("c_flags", &self.c_flags)
+            .field("asm_flags", &self.asm_flags)
+            .field("ld_flags", &self.ld_flags)
             .field("verbose", &self.verbose)
             .field("dry_run", &self.dry_run)
             .field("executor", &"<dyn Executor>")
@@ -50,6 +56,9 @@ impl CC65Compiler {
             include_paths: config.include_paths.clone().unwrap_or_default(),
             asm_include_paths: config.asm_include_paths.clone().unwrap_or_default(),
             config_file,
+            c_flags: config.c_flags.clone().unwrap_or_default(),
+            asm_flags: config.asm_flags.clone().unwrap_or_default(),
+            ld_flags: config.ld_flags.clone().unwrap_or_default(),
             verbose,
             dry_run,
             executor: Box::new(CommandExecutor::new("cl65")),
@@ -79,6 +88,9 @@ impl CC65Compiler {
             include_paths: config.include_paths.clone().unwrap_or_default(),
             asm_include_paths: config.asm_include_paths.clone().unwrap_or_default(),
             config_file,
+            c_flags: config.c_flags.clone().unwrap_or_default(),
+            asm_flags: config.asm_flags.clone().unwrap_or_default(),
+            ld_flags: config.ld_flags.clone().unwrap_or_default(),
             verbose,
             dry_run,
             executor,
@@ -242,6 +254,35 @@ impl CC65Compiler {
             dep_file.to_string_lossy().to_string()
         ]);
         
+        // Add appropriate flags based on file extension
+        if let Some(extension) = source.extension() {
+            match extension.to_string_lossy().to_lowercase().as_str() {
+                "c" => {
+                    // Add C flags
+                    for flag in &self.c_flags {
+                        args.push(flag.clone());
+                    }
+                    if self.dry_run {
+                        println!("[ARGS] Added C flags: {:?}", self.c_flags);
+                    }
+                }
+                "s" => {
+                    // Add assembly flags
+                    for flag in &self.asm_flags {
+                        args.push(flag.clone());
+                    }
+                    if self.dry_run {
+                        println!("[ARGS] Added ASM flags: {:?}", self.asm_flags);
+                    }
+                }
+                _ => {
+                    if self.dry_run {
+                        println!("[ARGS] Unknown file extension: {:?}, no specific flags added", extension);
+                    }
+                }
+            }
+        }
+        
         // C include paths in order
         for path in &self.include_paths {
             args.extend([
@@ -291,6 +332,14 @@ impl CC65Compiler {
             "-C".to_string(),
             self.config_file.to_string_lossy().to_string()
         ]);
+        
+        // Add linker flags
+        for flag in &self.ld_flags {
+            args.push(flag.clone());
+        }
+        if self.dry_run {
+            println!("[ARGS] Added LD flags: {:?}", self.ld_flags);
+        }
         
         // Map and label files
         args.extend([
@@ -368,6 +417,17 @@ mod tests {
             PathBuf::from("include1"),
             PathBuf::from("include2"),
         ]);
+        config.c_flags = Some(vec![
+            "-O".to_string(),
+            "-g".to_string(),
+        ]);
+        config.asm_flags = Some(vec![
+            "-g".to_string(),
+        ]);
+        config.ld_flags = Some(vec![
+            "-m".to_string(),
+            "atari.map".to_string(),
+        ]);
         config
     }
 
@@ -388,8 +448,9 @@ mod tests {
         // Define the expected order of arguments
         let expected_args = vec![
             "-t", "atari",           // Target platform must come first
-            "-c",                  // Compile only
+            "-c",                    // Compile only
             "--create-dep", "out/build/src/test.d",  // Dependency file
+            "-O", "-g",              // C flags for .c files
             "--include-dir", "include1",     // C include paths in order
             "--include-dir", "include2",
             "--asm-include-dir", "asm1",     // ASM include paths in order
@@ -428,6 +489,7 @@ mod tests {
         let expected_args = vec![
             "-t", "atari",           // Target platform must come first
             "-C", "config.cfg",      // Linker configuration
+            "-m", "atari.map",       // Linker flags
             "--mapfile", "output/app.map",  // Map file
             "-Ln", "output/app.lbl",       // Label file
             "-o", "output/game.nes",       // Output file must come before inputs
@@ -438,6 +500,43 @@ mod tests {
         // Convert expected args to String for comparison
         let expected: Vec<String> = expected_args.into_iter().map(String::from).collect();
         assert_eq!(args, expected, "Arguments are not in the expected order");
+    }
+
+    #[test]
+    fn test_asm_compile_args_generation() {
+        let compiler = create_test_compiler();
+        let source = Path::new("src/test.s");
+        let obj_file = Path::new("out/build/src/test.o");
+        let dep_file = Path::new("out/build/src/test.d");
+        let lst_file = Path::new("out/build/src/test.lst");
+
+        let args = compiler.generate_compile_args(source, obj_file, dep_file, lst_file);
+
+        // Define the expected order of arguments
+        let expected_args = vec![
+            "-t", "atari",           // Target platform must come first
+            "-c",                    // Compile only
+            "--create-dep", "out/build/src/test.d",  // Dependency file
+            "-g",                    // ASM flags for .s files
+            "--include-dir", "include1",     // C include paths in order
+            "--include-dir", "include2",
+            "--asm-include-dir", "asm1",     // ASM include paths in order
+            "--asm-include-dir", "asm2",
+            "--listing", "out/build/src/test.lst",   // Listing file
+            "-o", "out/build/src/test.o",           // Output file must come before input
+        ];
+
+        // Convert expected args to String for comparison
+        let expected: Vec<String> = expected_args.into_iter().map(String::from).collect();
+        
+        // The source path will be absolute, so we only check that it ends with our relative path
+        let source_arg = args.last().unwrap();
+        assert!(source_arg.ends_with("src/test.s"), "Source path '{}' does not end with 'src/test.s'", source_arg);
+        
+        // Remove the last argument (source path) from both vectors before comparing
+        let mut args = args;
+        args.pop();
+        assert_eq!(args, expected, "Arguments are not in the expected order for assembly files");
     }
 
     #[test]

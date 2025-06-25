@@ -25,6 +25,11 @@ pub struct Config {
     // CC65-specific settings
     pub config_file: Option<PathBuf>,
     pub asm_include_paths: Option<Vec<PathBuf>>,
+    
+    // CC65 compiler flags
+    pub c_flags: Option<Vec<String>>,
+    pub asm_flags: Option<Vec<String>>,
+    pub ld_flags: Option<Vec<String>>,
 }
 
 impl Default for Config {
@@ -39,6 +44,9 @@ impl Default for Config {
             configs: None,
             config_file: None,
             asm_include_paths: None,
+            c_flags: None,
+            asm_flags: None,
+            ld_flags: None,
         }
     }
 }
@@ -178,6 +186,32 @@ impl Config {
                     Some(ours)
                 }
                 (Some(paths), None) | (None, Some(paths)) => Some(paths),
+                (None, None) => None,
+            },
+            
+            // For flags, combine both sets if both exist
+            c_flags: match (self.c_flags, other.c_flags) {
+                (Some(mut ours), Some(theirs)) => {
+                    ours.extend(theirs);
+                    Some(ours)
+                }
+                (Some(flags), None) | (None, Some(flags)) => Some(flags),
+                (None, None) => None,
+            },
+            asm_flags: match (self.asm_flags, other.asm_flags) {
+                (Some(mut ours), Some(theirs)) => {
+                    ours.extend(theirs);
+                    Some(ours)
+                }
+                (Some(flags), None) | (None, Some(flags)) => Some(flags),
+                (None, None) => None,
+            },
+            ld_flags: match (self.ld_flags, other.ld_flags) {
+                (Some(mut ours), Some(theirs)) => {
+                    ours.extend(theirs);
+                    Some(ours)
+                }
+                (Some(flags), None) | (None, Some(flags)) => Some(flags),
                 (None, None) => None,
             },
         }
