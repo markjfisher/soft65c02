@@ -114,13 +114,20 @@ memory write $jump_table $handler+0x20   $$write address of handler+0x20 to jump
 
 #### memory show
 
-The `memory show` command displays a formatted hex dump of memory. It takes a location and length, with an optional description:
+The `memory show` command displays a formatted hex dump of memory. It takes a location, length, optional width, and optional description:
 
 ```
 memory show #0x1000 0x10           $$show 16 bytes starting at 0x1000$$
 memory show $data 0x100            $$show 256 bytes starting at symbol 'data'$$
 memory show $array+2 0x08          $$show 8 bytes with offset$$
 memory show #0x2000 0x20 $$cache$$ $$show 32 bytes with description$$
+```
+
+You can specify a custom width (bytes per line) as an optional parameter:
+
+```
+memory show #0x1000 0x20 8         $$show 32 bytes with 8 bytes per line$$
+memory show $data 0x40 4 $$table$$ $$show 64 bytes with 4 bytes per line$$
 ```
 
 The output is formatted as a hex dump with both hex values and ASCII representation (where printable). For example:
@@ -131,9 +138,17 @@ The output is formatted as a hex dump with both hex values and ASCII representat
 2010 : 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 | ................ 
 ```
 
+With a custom width of 8 bytes per line:
+
+```
+2000 : 48 65 6c 6c 6f 2c 20 77 | Hello, w
+2008 : 6f 72 6c 64 21 00 00 00 | orld!...
+```
+
 The command supports:
 - Direct hex addresses or symbols with optional offsets
 - Length in hex (1-4 digits)
+- Optional width parameter (1-255, defaults to 16)
 - Optional description in `$$description$$` format
 
 #### memory fill

@@ -31,7 +31,7 @@ memory_flush = { ^"flush" }
 memory_load = { ^"load" ~ (memory_address | target_name) ~ filename }
 memory_write = { ^"write" ~ memory_address ~ (^"0x(" ~ bytes ~ ")" | string_literal | memory_location) }
 memory_fill = { ^"fill" ~ memory_location ~ "~" ~ memory_location ~ (value8)? }
-memory_show = { ^"show" ~ memory_location ~ (value16 | value8) ~ ("$$" ~ description ~ "$$")? }
+memory_show = { ^"show" ~ memory_location ~ (value16 | value8) ~ (value8)? ~ ("$$" ~ description ~ "$$")? }
 
 target_name = { "atari" | "apple" }
 

@@ -701,14 +701,34 @@ impl<'a> MemoryCommandParser<'a> {
             _ => return Err(anyhow!("Expected value8 or value16 for length")),
         };
 
-        // Parse optional description
-        let description = if let Some(desc_pair) = pairs.next() {
-            Some(desc_pair.as_str().to_string())
-        } else {
-            None
-        };
+        // Parse optional width parameter
+        let mut width = None;
+        let mut description = None;
+        
+        if let Some(next_pair) = pairs.next() {
+            match next_pair.as_rule() {
+                Rule::value8 => {
+                    // This is the width parameter
+                    match self.context.parse_source_value(&next_pair)? {
+                        Source::Value(w) => {
+                            width = Some(w);
+                            // Parse optional description after width
+                            if let Some(desc_pair) = pairs.next() {
+                                description = Some(desc_pair.as_str().to_string());
+                            }
+                        }
+                        _ => return Err(anyhow!("Expected value for width")),
+                    }
+                }
+                Rule::description => {
+                    // This is the description (no width provided)
+                    description = Some(next_pair.as_str().to_string());
+                }
+                _ => return Err(anyhow!("Unexpected rule in memory show: {:?}", next_pair.as_rule())),
+            }
+        }
 
-        Ok(MemoryCommand::Show { address, length, description })
+        Ok(MemoryCommand::Show { address, length, width, description })
     }
 }
 
@@ -1203,8 +1223,8 @@ mod memory_command_parser_tests {
 
         assert!(
             matches!(command,
-                MemoryCommand::Show { address, length, description }
-                if address == 0x1234 && length == 0x10 && description.is_none()
+                MemoryCommand::Show { address, length, width, description }
+                if address == 0x1234 && length == 0x10 && width.is_none() && description.is_none()
             )
         );
 
@@ -1223,8 +1243,8 @@ mod memory_command_parser_tests {
 
         assert!(
             matches!(command,
-                MemoryCommand::Show { address, length, description }
-                if address == 0x1000 && length == 0x100 && description.is_none()
+                MemoryCommand::Show { address, length, width, description }
+                if address == 0x1000 && length == 0x100 && width.is_none() && description.is_none()
             )
         );
 
@@ -1239,8 +1259,8 @@ mod memory_command_parser_tests {
 
         assert!(
             matches!(command,
-                MemoryCommand::Show { address, length, description }
-                if address == 0x1234 && length == 16 && description.is_none()
+                MemoryCommand::Show { address, length, width, description }
+                if address == 0x1234 && length == 16 && width.is_none() && description.is_none()
             )
         );
 
@@ -1255,8 +1275,40 @@ mod memory_command_parser_tests {
 
         assert!(
             matches!(command,
-                MemoryCommand::Show { address, length, description }
-                if address == 0x1234 && length == 16 && description.as_deref() == Some("Stack contents")
+                MemoryCommand::Show { address, length, width, description }
+                if address == 0x1234 && length == 16 && width.is_none() && description.as_deref() == Some("Stack contents")
+            )
+        );
+
+        // Test with width
+        let input = "memory show #0x1234 16 8";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                MemoryCommand::Show { address, length, width, description }
+                if address == 0x1234 && length == 16 && width == Some(8) && description.is_none()
+            )
+        );
+
+        // Test with width and description
+        let input = "memory show #0x1234 16 4 $$Data with custom width$$";
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                MemoryCommand::Show { address, length, width, description }
+                if address == 0x1234 && length == 16 && width == Some(4) && description.as_deref() == Some("Data with custom width")
             )
         );
     }
