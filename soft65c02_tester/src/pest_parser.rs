@@ -1448,7 +1448,7 @@ impl<'a> RegisterCommandParser<'a> {
         let command = match pair.as_rule() {
             Rule::registers_flush => RegisterCommand::Flush,
             Rule::registers_set => self.parse_register_set(pair.into_inner())?,
-            Rule::registers_show => RegisterCommand::Show,
+            Rule::registers_show => self.parse_register_show(pair.into_inner())?,
             _ => {
                 panic!("Unexpected rule '{}', register rule was expected.", pair);
             }
@@ -1504,15 +1504,26 @@ impl<'a> RegisterCommandParser<'a> {
         })
     }
 
+    fn parse_register_show(&self, mut pairs: Pairs<Rule>) -> AppResult<RegisterCommand> {
+        let register = pairs.next()
+            .map(|pair| self.parse_register_source(pair.as_str()));
+
+        Ok(RegisterCommand::Show { register })
+    }
+
     fn parse_source_register(&self, node: &Pair<Rule>) -> Source {
-        match node.as_str() {
-            "A" => Source::Register(RegisterSource::Accumulator),
-            "X" => Source::Register(RegisterSource::RegisterX),
-            "Y" => Source::Register(RegisterSource::RegisterY),
-            "S" => Source::Register(RegisterSource::Status),
-            "SP" => Source::Register(RegisterSource::StackPointer),
-            "CP" => Source::Register(RegisterSource::CommandPointer),
-            "cycle_count" => Source::Register(RegisterSource::CycleCount),
+        Source::Register(self.parse_register_source(node.as_str()))
+    }
+
+    fn parse_register_source(&self, register_str: &str) -> RegisterSource {
+        match register_str {
+            "A" => RegisterSource::Accumulator,
+            "X" => RegisterSource::RegisterX,
+            "Y" => RegisterSource::RegisterY,
+            "S" => RegisterSource::Status,
+            "SP" => RegisterSource::StackPointer,
+            "CP" => RegisterSource::CommandPointer,
+            "cycle_count" => RegisterSource::CycleCount,
             v => panic!("unknown register type '{:?}'.", v),
         }
     }
@@ -1551,7 +1562,35 @@ mod register_parser_tests {
             .into_inner();
         let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
 
-        assert!(matches!(command, RegisterCommand::Show));
+        assert!(matches!(command, RegisterCommand::Show { register: None }));
+    }
+
+    #[test]
+    fn test_registers_show_cycle_count() {
+        let input = "registers show cycle_count";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(matches!(command, RegisterCommand::Show { register: Some(RegisterSource::CycleCount) }));
+    }
+
+    #[test]
+    fn test_registers_show_accumulator() {
+        let input = "registers show A";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(matches!(command, RegisterCommand::Show { register: Some(RegisterSource::Accumulator) }));
     }
 
     #[test]

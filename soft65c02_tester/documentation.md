@@ -199,6 +199,45 @@ registers set A=0x01
 
 Set a register to the given value.
 
+#### registers show
+
+The `registers show` command displays the current state of CPU registers. It can be used in two ways:
+
+```
+registers show              $$display all registers$$
+registers show A            $$display only the accumulator$$
+registers show cycle_count  $$display only the cycle count$$
+```
+
+When showing all registers, the output includes:
+- **A** - Accumulator (8-bit) in hex and decimal
+- **X** - X register (8-bit) in hex and decimal  
+- **Y** - Y register (8-bit) in hex and decimal
+- **S** - Status register as binary flags (NV-BdIzc format)
+- **SP** - Stack pointer (8-bit) in hex and decimal
+- **CP** - Command pointer/Program counter (16-bit) in hex
+- **cycle_count** - Total CPU cycles executed (64-bit) in decimal
+
+Example output:
+```
+🔧 Registers:
+   A  = 0x42  (66)
+   X  = 0xFA  (250)
+   Y  = 0xB5  (181)
+   S  = 0b11110100  NV-BdIzc
+   SP = 0x84  (132)
+   CP = 0x1005
+   cycle_count = 55
+```
+
+When showing a specific register, only that register's value is displayed:
+```
+🔧 cycle_count = 55
+🔧 A = 0x42  (66)
+```
+
+Available registers for individual display: `A`, `X`, `Y`, `S`, `SP`, `CP`, `cycle_count`.
+
 ### symbols
 
 Symbols work exactly the same as memory addresses when dealing with memory, assert commands, and run until statements.

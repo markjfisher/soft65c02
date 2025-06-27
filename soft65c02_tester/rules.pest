@@ -18,7 +18,7 @@ registers_instruction = { ^"registers" ~ registers_action }
 registers_action = _{ registers_set | registers_flush | registers_show }
 registers_flush = { ^"flush" }
 registers_set = { ^"set" ~ register_assignment }
-registers_show = { ^"show" }
+registers_show = { ^"show" ~ (register8 | register16 | register_cycle)? }
 
 register_assignment = { assignment8 | assignment16 | assignment_cycle }
 

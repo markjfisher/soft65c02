@@ -260,7 +260,7 @@ impl BooleanExpression {
 pub enum RegisterCommand {
     Flush,
     Set { assignment: Assignment },
-    Show,
+    Show { register: Option<RegisterSource> },
 }
 
 impl Command for RegisterCommand {
@@ -272,17 +272,33 @@ impl Command for RegisterCommand {
                 vec!["registers flushed".to_string()]
             }
             Self::Set { assignment } => assignment.execute(registers, memory)?,
-            Self::Show => {
-                vec![
-                    "Registers:".to_string(),
-                    format!("   A  = 0x{:02X}  ({})", registers.accumulator, registers.accumulator),
-                    format!("   X  = 0x{:02X}  ({})", registers.register_x, registers.register_x),
-                    format!("   Y  = 0x{:02X}  ({})", registers.register_y, registers.register_y),
-                    format!("   S  = 0b{:08b}  {}", registers.get_status_register(), registers.format_status()),
-                    format!("   SP = 0x{:02X}  ({})", registers.stack_pointer, registers.stack_pointer),
-                    format!("   CP = 0x{:04X}", registers.command_pointer),
-                    format!("   cycle_count = {}", registers.cycle_count),
-                ]
+            Self::Show { register } => {
+                match register {
+                    Some(reg) => {
+                        let value = reg.get_value(registers);
+                        match reg {
+                            RegisterSource::Accumulator => vec![format!("A = 0x{:02X}  ({})", value, value)],
+                            RegisterSource::RegisterX => vec![format!("X = 0x{:02X}  ({})", value, value)],
+                            RegisterSource::RegisterY => vec![format!("Y = 0x{:02X}  ({})", value, value)],
+                            RegisterSource::Status => vec![format!("S = 0b{:08b}  {}", value, registers.format_status())],
+                            RegisterSource::StackPointer => vec![format!("SP = 0x{:02X}  ({})", value, value)],
+                            RegisterSource::CommandPointer => vec![format!("CP = 0x{:04X}", value)],
+                            RegisterSource::CycleCount => vec![format!("cycle_count = {}", value)],
+                        }
+                    }
+                    None => {
+                        vec![
+                            "Registers:".to_string(),
+                            format!("   A  = 0x{:02X}  ({})", registers.accumulator, registers.accumulator),
+                            format!("   X  = 0x{:02X}  ({})", registers.register_x, registers.register_x),
+                            format!("   Y  = 0x{:02X}  ({})", registers.register_y, registers.register_y),
+                            format!("   S  = 0b{:08b}  {}", registers.get_status_register(), registers.format_status()),
+                            format!("   SP = 0x{:02X}  ({})", registers.stack_pointer, registers.stack_pointer),
+                            format!("   CP = 0x{:04X}", registers.command_pointer),
+                            format!("   cycle_count = {}", registers.cycle_count),
+                        ]
+                    }
+                }
             }
         };
 
@@ -886,7 +902,7 @@ mod register_command_tests {
 
     #[test]
     fn test_show() {
-        let command = RegisterCommand::Show;
+        let command = RegisterCommand::Show { register: None };
         let mut registers = Registers::new_initialized(0x1234);
         registers.accumulator = 0x42;
         registers.register_x = 0x10;
@@ -905,6 +921,38 @@ mod register_command_tests {
             assert_eq!(lines[5], "   SP = 0xFE  (254)");
             assert_eq!(lines[6], "   CP = 0x1234");
             assert_eq!(lines[7], "   cycle_count = 1847");
+        } else {
+            panic!("Expected Setup token");
+        }
+    }
+
+    #[test]
+    fn test_show_cycle_count() {
+        let command = RegisterCommand::Show { register: Some(RegisterSource::CycleCount) };
+        let mut registers = Registers::new_initialized(0x1234);
+        registers.cycle_count = 1847;
+        let mut memory = Memory::new_with_ram();
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        if let OutputToken::Setup(lines) = token {
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0], "cycle_count = 1847");
+        } else {
+            panic!("Expected Setup token");
+        }
+    }
+
+    #[test]
+    fn test_show_accumulator() {
+        let command = RegisterCommand::Show { register: Some(RegisterSource::Accumulator) };
+        let mut registers = Registers::new_initialized(0x1234);
+        registers.accumulator = 0x42;
+        let mut memory = Memory::new_with_ram();
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        if let OutputToken::Setup(lines) = token {
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0], "A = 0x42  (66)");
         } else {
             panic!("Expected Setup token");
         }
