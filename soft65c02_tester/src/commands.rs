@@ -260,6 +260,7 @@ impl BooleanExpression {
 pub enum RegisterCommand {
     Flush,
     Set { assignment: Assignment },
+    Show,
 }
 
 impl Command for RegisterCommand {
@@ -271,6 +272,18 @@ impl Command for RegisterCommand {
                 vec!["registers flushed".to_string()]
             }
             Self::Set { assignment } => assignment.execute(registers, memory)?,
+            Self::Show => {
+                vec![
+                    "Registers:".to_string(),
+                    format!("   A  = 0x{:02X}  ({})", registers.accumulator, registers.accumulator),
+                    format!("   X  = 0x{:02X}  ({})", registers.register_x, registers.register_x),
+                    format!("   Y  = 0x{:02X}  ({})", registers.register_y, registers.register_y),
+                    format!("   S  = 0b{:08b}  {}", registers.get_status_register(), registers.format_status()),
+                    format!("   SP = 0x{:02X}  ({})", registers.stack_pointer, registers.stack_pointer),
+                    format!("   CP = 0x{:04X}", registers.command_pointer),
+                    format!("   cycle_count = {}", registers.cycle_count),
+                ]
+            }
         };
 
         let token = OutputToken::Setup(outputs);
@@ -869,6 +882,32 @@ mod register_command_tests {
 
         assert!(matches!(token, OutputToken::Setup(s) if s[0] == *"register X set to 0xff"));
         assert_eq!(0xff, registers.register_x);
+    }
+
+    #[test]
+    fn test_show() {
+        let command = RegisterCommand::Show;
+        let mut registers = Registers::new_initialized(0x1234);
+        registers.accumulator = 0x42;
+        registers.register_x = 0x10;
+        registers.register_y = 0x20;
+        registers.stack_pointer = 0xFE;
+        registers.cycle_count = 1847;
+        let mut memory = Memory::new_with_ram();
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+
+        if let OutputToken::Setup(lines) = token {
+            assert_eq!(lines[0], "Registers:");
+            assert_eq!(lines[1], "   A  = 0x42  (66)");
+            assert_eq!(lines[2], "   X  = 0x10  (16)");
+            assert_eq!(lines[3], "   Y  = 0x20  (32)");
+            assert!(lines[4].starts_with("   S  = 0b"));
+            assert_eq!(lines[5], "   SP = 0xFE  (254)");
+            assert_eq!(lines[6], "   CP = 0x1234");
+            assert_eq!(lines[7], "   cycle_count = 1847");
+        } else {
+            panic!("Expected Setup token");
+        }
     }
 }
 

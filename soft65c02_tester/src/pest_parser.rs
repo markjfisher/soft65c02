@@ -1448,6 +1448,7 @@ impl<'a> RegisterCommandParser<'a> {
         let command = match pair.as_rule() {
             Rule::registers_flush => RegisterCommand::Flush,
             Rule::registers_set => self.parse_register_set(pair.into_inner())?,
+            Rule::registers_show => RegisterCommand::Show,
             _ => {
                 panic!("Unexpected rule '{}', register rule was expected.", pair);
             }
@@ -1537,6 +1538,20 @@ mod register_parser_tests {
         let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
 
         assert!(matches!(command, RegisterCommand::Flush));
+    }
+
+    #[test]
+    fn test_registers_show() {
+        let input = "registers show";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(matches!(command, RegisterCommand::Show));
     }
 
     #[test]

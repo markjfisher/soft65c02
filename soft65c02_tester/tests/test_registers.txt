@@ -1,0 +1,11 @@
+marker $$testing registers show$$
+
+memory write #0x1000 0x(a9,42,85,80,ca,d0,fb)
+registers set CP=0x1000
+registers set X=0
+registers show
+run until X = 0xFA
+registers show
+run until X = 0xF9
+registers show
+
