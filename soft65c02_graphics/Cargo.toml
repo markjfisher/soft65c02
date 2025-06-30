@@ -8,12 +8,21 @@ repository.workspace = true
 
 [dependencies]
 soft65c02_lib = { path = "../soft65c02_lib" }
-minifb = "0.15.1"
+minifb = { version = "0.15.1", optional = true }
+pixels = { version = "0.13", optional = true }
+winit = { version = "0.28", optional = true }
 
 [features]
 default = ["minifb-backend"]
-minifb-backend = []
+minifb-backend = ["minifb"]
+pixels-backend = ["pixels", "winit"]
 
 [[example]]
 name = "minifb"
-path = "examples/minifb.rs" 
+path = "examples/minifb.rs"
+required-features = ["minifb-backend"]
+
+[[example]]
+name = "pixels"
+path = "examples/pixels.rs"
+required-features = ["pixels-backend"] 
