@@ -1,19 +1,20 @@
 [package]
 name = "soft65c02_graphics"
-version = "1.0.0-alpha2"
+version = "0.1.0"
+edition = "2021"
 authors.workspace = true
-edition.workspace = true
-license.workspace = true
 repository.workspace = true
 
 [dependencies]
 soft65c02_lib = { path = "../soft65c02_lib" }
+soft65c02_tester = { path = "../soft65c02_tester" }
 minifb = { version = "0.15.1", optional = true }
 pixels = { version = "0.13", optional = true }
 winit = { version = "0.28", optional = true }
+rand = "0.9.1"
 
 [features]
-default = ["minifb-backend"]
+default = []  # Empty default features
 minifb-backend = ["minifb"]
 pixels-backend = ["pixels", "winit"]
 
@@ -25,4 +26,9 @@ required-features = ["minifb-backend"]
 [[example]]
 name = "pixels"
 path = "examples/pixels.rs"
+required-features = ["pixels-backend"]
+
+[[example]]
+name = "game_of_life_pixels"
+path = "examples/game_of_life/game_of_life_pixels.rs"
 required-features = ["pixels-backend"] 

@@ -4,11 +4,14 @@
  * Modern graphics backend using pixels + winit for better cross-platform support,
  * particularly improved Wayland compatibility.
  *
- * Memory layout (same as MiniFB backend):
+ * Internal memory layout (relative to subsystem start):
  * #0x0000 → #0x002F    palette (16 × 3 bytes for RGB)
  * #0x0030 → #0x003F    keyboard keys pressed
  * #0x0040 → #0x00FF    unused¹
  * #0x0100 → #0x1900    video buffer
+ *
+ * ¹ Technically this is still RAM so it can be used to just store data. Be aware that it will
+ * trigger token inspection on write hence might be less performant than a RAM memory subsystem.
  */
 use soft65c02_lib::{AddressableIO, DisplayBackend, memory::MemoryError};
 use pixels::{Pixels, SurfaceTexture};
@@ -25,7 +28,7 @@ use winit::event_loop::EventLoopBuilder;
 
 #[cfg(not(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))]
 use winit::event_loop::EventLoop;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 
@@ -35,12 +38,11 @@ use winit::platform::x11::EventLoopBuilderExtX11;
 
 pub const DISPLAY_WIDTH: usize = 128;
 pub const DISPLAY_HEIGHT: usize = 96;
-pub const BUFFER_VIDEO_START_ADDR: usize = 256;
+pub const BUFFER_VIDEO_START_ADDR: usize = 0x0100;
+pub const TOTAL_MEMORY_SIZE: usize = 0x1900;  // Up to end of video buffer
 
 pub struct CommunicationToken {
     is_calling: AtomicBool,
-    address: AtomicUsize,
-    len: AtomicUsize,
     is_active: AtomicBool,
 }
 
@@ -99,6 +101,17 @@ impl WindowState {
             } => {
                 let code = get_key_code(key_code);
                 let _ = self.input_tx.send(code as u32);
+                
+                // Write key code to proper keyboard buffer (0x30-0x3F)
+                // For single key events, we'll put it in the first slot and clear others
+                let mut buffer = self.buffer.lock().unwrap();
+                if buffer.len() > 0x3F {
+                    buffer[0x30] = code;  // First key slot
+                    // Clear remaining slots for single-key semantics
+                    for i in 0x31..=0x3F {
+                        buffer[i] = 0;
+                    }
+                }
             }
             WindowEvent::Resized(size) => {
                 if let Err(err) = self.pixels.resize_surface(size.width, size.height) {
@@ -115,25 +128,27 @@ impl WindowState {
             return;
         }
         
-        let addr = self.token.address.load(Ordering::SeqCst);
-        let len = self.token.len.load(Ordering::SeqCst);
         let buffer = self.buffer.lock().unwrap();
         let frame = self.pixels.frame_mut();
         
-        Self::render_video_buffer(&buffer, addr, len, frame);
+        Self::render_video_buffer(&buffer, frame);
         self.token.is_calling.store(false, Ordering::SeqCst);
     }
     
-    fn render_video_buffer(buffer: &[u8], addr: usize, len: usize, frame: &mut [u8]) {
-        for (index, byte) in buffer[addr..addr + len].iter().enumerate() {
-            let addr_index = addr + index;
-            if addr_index < BUFFER_VIDEO_START_ADDR {
-                continue;
+    fn render_video_buffer(buffer: &[u8], frame: &mut [u8]) {
+        // Always render the entire video buffer
+        let video_buffer_start = BUFFER_VIDEO_START_ADDR;
+        let video_buffer_size = (DISPLAY_WIDTH / 2) * DISPLAY_HEIGHT; // 2 pixels per byte
+        
+        for video_offset in 0..video_buffer_size {
+            let buffer_index = video_buffer_start + video_offset;
+            if buffer_index >= buffer.len() {
+                break;
             }
             
-            let video_offset = addr_index - BUFFER_VIDEO_START_ADDR;
-            let pixel_x = (video_offset % 64) * 2; // 64 bytes per row, 2 pixels per byte
-            let pixel_y = video_offset / 64;
+            let byte = buffer[buffer_index];
+            let pixel_x = (video_offset % (DISPLAY_WIDTH / 2)) * 2; // 64 bytes per row, 2 pixels per byte
+            let pixel_y = video_offset / (DISPLAY_WIDTH / 2);
             
             if pixel_y >= DISPLAY_HEIGHT || pixel_x >= DISPLAY_WIDTH - 1 {
                 continue;
@@ -154,19 +169,15 @@ impl WindowState {
             return;
         }
         
-        let palette_offset = (color_index as usize) * 3;
-        if palette_offset + 2 >= buffer.len() {
-            return;
-        }
-        
         let rgba_offset = (y * DISPLAY_WIDTH + x) * 4;
         if rgba_offset + 3 >= frame.len() {
             return;
         }
         
-        frame[rgba_offset] = buffer[palette_offset];     // R
-        frame[rgba_offset + 1] = buffer[palette_offset + 1]; // G
-        frame[rgba_offset + 2] = buffer[palette_offset + 2]; // B
+        // Read palette colors from the start of memory (0x0000) where the palette is stored
+        frame[rgba_offset] = buffer[(color_index as usize) * 3];     // R
+        frame[rgba_offset + 1] = buffer[(color_index as usize) * 3 + 1]; // G
+        frame[rgba_offset + 2] = buffer[(color_index as usize) * 3 + 2]; // B
         frame[rgba_offset + 3] = 255; // A
     }
     
@@ -348,15 +359,10 @@ fn get_key_code(key: VirtualKeyCode) -> u8 {
 }
 
 impl PixelsDisplay {
-    pub fn new() -> PixelsDisplay {
-        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(vec![
-            0;
-            DISPLAY_WIDTH * DISPLAY_HEIGHT / 2 + BUFFER_VIDEO_START_ADDR
-        ]));
+    pub fn new() -> Self {
+        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(vec![0; TOTAL_MEMORY_SIZE]));
         let token = Arc::new(CommunicationToken {
             is_calling: AtomicBool::new(false),
-            address: AtomicUsize::new(0),
-            len: AtomicUsize::new(0),
             is_active: AtomicBool::new(true),
         });
         
@@ -384,7 +390,7 @@ impl PixelsDisplay {
             run_event_loop(event_loop, window, rtoken, rbuffer, input_tx);
         });
 
-        PixelsDisplay { 
+        Self { 
             token, 
             buffer,
             input_receiver: Some(input_rx),
@@ -394,7 +400,7 @@ impl PixelsDisplay {
 
 impl AddressableIO for PixelsDisplay {
     fn get_size(&self) -> usize {
-        DISPLAY_WIDTH * DISPLAY_HEIGHT / 2 + BUFFER_VIDEO_START_ADDR
+        TOTAL_MEMORY_SIZE
     }
 
     fn read(&self, addr: usize, len: usize) -> Result<Vec<u8>, MemoryError> {
@@ -414,8 +420,6 @@ impl AddressableIO for PixelsDisplay {
             }
         }
         self.token.is_calling.store(true, Ordering::Release);
-        self.token.address.store(addr, Ordering::SeqCst);
-        self.token.len.store(data.len(), Ordering::SeqCst);
         Ok(())
     }
 }
