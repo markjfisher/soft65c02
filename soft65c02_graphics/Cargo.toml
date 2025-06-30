@@ -1,0 +1,19 @@
+[package]
+name = "soft65c02_graphics"
+version = "1.0.0-alpha2"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+soft65c02_lib = { path = "../soft65c02_lib" }
+minifb = "0.15.1"
+
+[features]
+default = ["minifb-backend"]
+minifb-backend = []
+
+[[example]]
+name = "minifb"
+path = "examples/minifb.rs" 

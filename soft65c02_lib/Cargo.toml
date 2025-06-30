@@ -10,6 +10,5 @@ repository.workspace = true
 
 [dependencies]
 range-map   = "0.1.5"
-minifb      = "0.15.1"
 hex         = "0.4.0"
 rand        = "0.7.3"
