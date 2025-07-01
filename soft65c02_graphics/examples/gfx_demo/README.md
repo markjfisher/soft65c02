@@ -18,7 +18,14 @@ A sophisticated graphics demonstration showcasing the soft65c02 emulator's capab
 - **Reset function**: R key returns to default view
 - **High-performance computation** with configurable iteration limits
 
-### 3. Extensible Architecture (Modes 3-9)
+### 3. Hilbert Curve Explorer (Mode 3) ⭐ **NEW**
+- **Interactive space-filling curve** with animated construction
+- **Multiple iteration levels** (1-7, perfect 128×128 fit at level 7)
+- **Four color modes**: Construction order, depth gradient, rainbow spiral, distance gradient
+- **Real-time animation** with adjustable speed (slow/medium/fast/instant)
+- **Navigation**: Pan, zoom, and pause controls for detailed exploration
+
+### 4. Extensible Architecture (Modes 4-9)
 - Framework ready for additional games and visualizations
 - Each mode gets its own dedicated processor and state management
 - Easy to add new interactive graphics applications
@@ -28,8 +35,9 @@ A sophisticated graphics demonstration showcasing the soft65c02 emulator's capab
 ### Universal Controls
 - **Number Keys (1-9)**: Switch between game modes
   - `1` = Game of Life
-  - `2` = Mandelbrot Set Explorer  
-  - `3-9` = Reserved for future games
+  - `2` = Mandelbrot Set Explorer
+  - `3` = Hilbert Curve Explorer  
+  - `4-9` = Reserved for future games
 - **0 Key**: No-op mode (system idle)
 - **P Key**: Toggle pause (stops generation, allows mode switching)
 
@@ -43,6 +51,18 @@ A sophisticated graphics demonstration showcasing the soft65c02 emulator's capab
 - **= Key**: Alternative zoom in (for keyboards where + requires Shift)
 - **I Key**: Increase iteration limit (more detail)
 - **D Key**: Decrease iteration limit (faster computation)
+- **R Key**: Reset to default view
+
+### Hilbert Curve Explorer (Mode 3)
+- **Arrow Keys**: Pan view (when zoomed in)
+- **+ Key**: Zoom in for detail viewing
+- **- Key**: Zoom out
+- **= Key**: Alternative zoom in
+- **I Key**: Increase iteration level (more complex curve)
+- **D Key**: Decrease iteration level (simpler curve)
+- **S Key**: Toggle animation speed (slow/medium/fast/instant)
+- **C Key**: Cycle through color modes
+- **Space Key**: Pause/resume animation
 - **R Key**: Reset to default view
 
 ## 🌍 International Keyboard Support
@@ -75,7 +95,7 @@ The system uses a **hybrid input approach** for maximum compatibility across key
 0x8000-0x802F : Color palette (16 colors × 3 bytes RGB)
 0x8030        : Keyboard input buffer
 0x8040        : Command register (0=no-op, 1=generate, 2=process-input, 3=debug)
-0x8041        : Mode register (0=no-op, 1=GoL, 2=Mandelbrot, 3-9=future)
+0x8041        : Mode register (0=no-op, 1=GoL, 2=Mandelbrot, 3=Hilbert, 4-9=future)
 0x8100-0x18FF : Video buffer (128×96 pixels, 4-bit color, 2 pixels/byte)
 ```
 
@@ -146,6 +166,11 @@ cargo run --example gfx_demo --features pixels-backend
 - **Color 0**: Black (points in the set)
 - **Colors 1-15**: Gradient from blue→purple→red→orange→yellow→white
 - Iteration count determines color, creating stunning fractal boundaries
+
+### Hilbert Curve Palette
+- **Color 0**: Black (background)
+- **Colors 1-15**: Smooth spectrum from deep purple→blue→cyan→green→yellow→red→white
+- Color usage depends on selected mode: construction order, recursion depth, rainbow spiral, or distance gradient
 
 ## 🚀 Future Extensions
 

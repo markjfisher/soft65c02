@@ -30,8 +30,10 @@ use soft65c02_tester::{CliDisplayer, Displayer};
 
 mod gol;
 mod mandlebrot;
+mod hilbert;
 use gol::{GameOfLifeState, get_gol_palette};
 use mandlebrot::{MandelbrotState, get_mandelbrot_palette};
+use hilbert::{HilbertCurveState, get_hilbert_palette};
 
 // Frame rate constants
 const UPDATES_PER_SECOND: u64 = 600;
@@ -49,6 +51,7 @@ const APPLICATION_LOAD_START: usize = 0x1000;
 const MODE_NO_OP: u8 = 0x00;
 const MODE_GAME_OF_LIFE: u8 = 0x01;
 const MODE_MANDELBROT: u8 = 0x02;
+const MODE_HILBERT_CURVE: u8 = 0x03;
 
 // Commands
 const CMD_NO_ACTION: u8 = 0x00;
@@ -102,10 +105,30 @@ impl GameProcessor for MandelbrotState {
     }
 }
 
+// Implement the trait for HilbertCurveState
+impl GameProcessor for HilbertCurveState {
+    fn compute_next_generation(&mut self) {
+        self.compute_next_generation();
+    }
+    
+    fn write_to_memory(&mut self, memory: &mut Memory) {
+        self.write_to_memory(memory);
+    }
+    
+    fn process_keyboard_input(&mut self, key_code: u8, memory: &mut Memory) -> bool {
+        self.process_keyboard_input(key_code, memory)
+    }
+    
+    fn get_palette(&self) -> Vec<u8> {
+        get_hilbert_palette()
+    }
+}
+
 // Game manager that holds all game states and dispatches commands
 struct GameManager {
     game_of_life: Option<GameOfLifeState>,
     mandelbrot: Option<MandelbrotState>,
+    hilbert_curve: Option<HilbertCurveState>,
     current_mode: u8,
 }
 
@@ -114,6 +137,7 @@ impl GameManager {
         Self {
             game_of_life: None,
             mandelbrot: None,
+            hilbert_curve: None,
             current_mode: MODE_NO_OP,
         }
     }
@@ -137,6 +161,15 @@ impl GameManager {
                     self.mandelbrot = Some(mandelbrot_state);
                 }
                 self.mandelbrot.as_mut().map(|m| m as &mut dyn GameProcessor)
+            }
+            MODE_HILBERT_CURVE => {
+                if self.hilbert_curve.is_none() {
+                    println!("Creating Hilbert curve processor with default parameters");
+                    let mut hilbert_state = HilbertCurveState::new();
+                    hilbert_state.reset_to_default(memory);  // Only initialize when first created
+                    self.hilbert_curve = Some(hilbert_state);
+                }
+                self.hilbert_curve.as_mut().map(|h| h as &mut dyn GameProcessor)
             }
             _ => None,
         }
@@ -242,8 +275,8 @@ fn main() {
     println!("Using memory-mapped architecture:");
     println!("  Command Address: 0x{:04X}", COMMAND_ADDR);
     println!("  Mode Address:    0x{:04X}", MODE_ADDR);
-    println!("  Mode values: 0x{:02X}=No-op, 0x{:02X}=Game of Life, 0x{:02X}=Mandelbrot", 
-             MODE_NO_OP, MODE_GAME_OF_LIFE, MODE_MANDELBROT);
+    println!("  Mode values: 0x{:02X}=No-op, 0x{:02X}=Game of Life, 0x{:02X}=Mandelbrot, 0x{:02X}=Hilbert Curve", 
+             MODE_NO_OP, MODE_GAME_OF_LIFE, MODE_MANDELBROT, MODE_HILBERT_CURVE);
     println!("  Command values: 0x{:02X}=No action, 0x{:02X}=Generate step, 0x{:02X}=Process keyboard, 0x{:02X}=Debug halt", 
              CMD_NO_ACTION, CMD_GENERATE, CMD_PROCESS_KEYBOARD, CMD_DEBUG_HALT);
 
