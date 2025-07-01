@@ -2,7 +2,23 @@
 
 A sophisticated graphics demonstration showcasing the soft65c02 emulator's capabilities with multiple interactive games and visualizations. This system combines 6502 assembly code for real-time input handling with Rust acceleration for computationally intensive graphics generation.
 
-## 🎮 Games & Visualizations
+## 🛠️ Building & Running
+
+### Prerequisites
+- Rust toolchain
+- CC65 assembler for 6502 code compilation (optional for extending and building game.bin)
+
+### Build Process
+```bash
+# This is an optional step, if build/game.bin is not found a pre-compiled version of it is automatically loaded.
+# But you can optionally compile 6502 assembly to binary yourself, or extend it and compile it with this:
+./compile.sh
+
+# Run the graphics demo
+cargo run --example game --features pixels-backend
+```
+
+## 🎮 Visualizations
 
 ### 1. Conway's Game of Life (Mode 1)
 - **Colorful cellular automaton** with neighbor-count based coloring
@@ -18,12 +34,14 @@ A sophisticated graphics demonstration showcasing the soft65c02 emulator's capab
 - **Reset function**: R key returns to default view
 - **High-performance computation** with configurable iteration limits
 
-### 3. Hilbert Curve Explorer (Mode 3) ⭐ **NEW**
-- **Interactive space-filling curve** with animated construction
-- **Multiple iteration levels** (1-7, perfect 128×128 fit at level 7)
+### 3. Space-Filling Curve Explorer (Mode 3)
+- **Three curve types**: Hilbert, Peano, and Dragon curves with distinct mathematical properties
+- **Curve-specific optimization**: Each curve type has tailored default levels (Hilbert: 5, Peano: 3, Dragon: 8)
+- **Interactive construction** with real-time animated generation showing step-by-step building
+- **Scalable complexity**: Multiple iteration levels with curve-specific maximums (Hilbert: 1-9, Peano: 1-5, Dragon: 1-12)
 - **Four color modes**: Construction order, depth gradient, rainbow spiral, distance gradient
 - **Real-time animation** with adjustable speed (slow/medium/fast/instant)
-- **Navigation**: Pan, zoom, and pause controls for detailed exploration
+- **Full navigation**: Pan, zoom, pause, and detailed exploration controls
 
 ### 4. Extensible Architecture (Modes 4-9)
 - Framework ready for additional games and visualizations
@@ -36,7 +54,7 @@ A sophisticated graphics demonstration showcasing the soft65c02 emulator's capab
 - **Number Keys (1-9)**: Switch between game modes
   - `1` = Game of Life
   - `2` = Mandelbrot Set Explorer
-  - `3` = Hilbert Curve Explorer  
+  - `3` = Space-Filling Curve Explorer  
   - `4-9` = Reserved for future games
 - **0 Key**: No-op mode (system idle)
 - **P Key**: Toggle pause (stops generation, allows mode switching)
@@ -53,7 +71,8 @@ A sophisticated graphics demonstration showcasing the soft65c02 emulator's capab
 - **D Key**: Decrease iteration limit (faster computation)
 - **R Key**: Reset to default view
 
-### Hilbert Curve Explorer (Mode 3)
+### Space-Filling Curve Explorer (Mode 3)
+- **T Key**: Cycle through curve types (Hilbert → Peano → Dragon → Hilbert...)
 - **Arrow Keys**: Pan view (when zoomed in)
 - **+ Key**: Zoom in for detail viewing
 - **- Key**: Zoom out
@@ -61,32 +80,10 @@ A sophisticated graphics demonstration showcasing the soft65c02 emulator's capab
 - **I Key**: Increase iteration level (more complex curve)
 - **D Key**: Decrease iteration level (simpler curve)
 - **S Key**: Toggle animation speed (slow/medium/fast/instant)
-- **C Key**: Cycle through color modes
+- **C Key**: Cycle through color modes (construction order/depth/rainbow/distance)
+- **F Key**: Refresh/redraw current curve with current settings
 - **Space Key**: Pause/resume animation
-- **R Key**: Reset to default view
-
-## 🌍 International Keyboard Support
-
-The system uses a **hybrid input approach** for maximum compatibility across keyboard layouts:
-
-### Layout-Aware Characters
-- **Symbols** (+, -, =): Work on any layout
-  - German QWERTZ: `Shift+*` produces "+"
-  - US QWERTY: `Shift+=` produces "+"
-  - UK QWERTY: `Shift+=` produces "+"
-  - French AZERTY: `Shift+=` produces "+"
-
-### Layout-Independent Keys
-- **Numbers (0-9)**: Physical position consistent
-- **Arrows**: Always work the same
-- **Letters**: Accept both uppercase and lowercase
-
-### Tested Layouts
-✅ US QWERTY  
-✅ UK QWERTY  
-✅ German QWERTZ  
-✅ French AZERTY  
-✅ And many others!
+- **R Key**: Reset to default view and settings
 
 ## 🏗️ Architecture
 
@@ -95,7 +92,7 @@ The system uses a **hybrid input approach** for maximum compatibility across key
 0x8000-0x802F : Color palette (16 colors × 3 bytes RGB)
 0x8030        : Keyboard input buffer
 0x8040        : Command register (0=no-op, 1=generate, 2=process-input, 3=debug)
-0x8041        : Mode register (0=no-op, 1=GoL, 2=Mandelbrot, 3=Hilbert, 4-9=future)
+0x8041        : Mode register (0=no-op, 1=GoL, 2=Mandelbrot, 3=Space-Filling, 4-9=future)
 0x8100-0x18FF : Video buffer (128×96 pixels, 4-bit color, 2 pixels/byte)
 ```
 
@@ -110,26 +107,12 @@ The system uses a **hybrid input approach** for maximum compatibility across key
 - **Video buffer is output-only** - games never read their state back from display
 - **Solved state corruption bug** where switching modes would corrupt game progress
 
-## 🛠️ Building & Running
-
-### Prerequisites
-- Rust toolchain with soft65c02 libraries
-- CC65 assembler for 6502 code compilation
-
-### Build Process
-```bash
-# Compile 6502 assembly to binary
-./compile.sh
-
-# Run the graphics demo
-cargo run --example gfx_demo --features pixels-backend
-```
-
 ### Files Structure
 - `game.rs` - Main Rust application with game manager and memory-mapped interface
 - `game.s` - 6502 assembly for input handling and system control
 - `gol.rs` - Game of Life implementation with colorful visualization
 - `mandlebrot.rs` - Mandelbrot set explorer with real-time parameter adjustment
+- `sfc.rs` - Space-filling curve explorer (Hilbert, Peano, Dragon curves)
 - `compile.sh` - Build script for 6502 assembly compilation
 - `game.cfg` - CC65 linker configuration
 
@@ -167,10 +150,11 @@ cargo run --example gfx_demo --features pixels-backend
 - **Colors 1-15**: Gradient from blue→purple→red→orange→yellow→white
 - Iteration count determines color, creating stunning fractal boundaries
 
-### Hilbert Curve Palette
+### Space-Filling Curve Palette
 - **Color 0**: Black (background)
 - **Colors 1-15**: Smooth spectrum from deep purple→blue→cyan→green→yellow→red→white
 - Color usage depends on selected mode: construction order, recursion depth, rainbow spiral, or distance gradient
+- Used by all three curve types: Hilbert, Peano, and Dragon curves
 
 ## 🚀 Future Extensions
 
