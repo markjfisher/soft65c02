@@ -29,6 +29,6 @@ path = "examples/pixels.rs"
 required-features = ["pixels-backend"]
 
 [[example]]
-name = "game_of_life_pixels"
-path = "examples/game_of_life/game_of_life_pixels.rs"
+name = "game"
+path = "examples/gfx_demo/game.rs"
 required-features = ["pixels-backend"] 

@@ -8,7 +8,7 @@
 
         .include    "zeropage.inc"
 
-; this is deliberately over complicated for the example of game_of_life, but can
+; this is deliberately over complicated for the example of gfx_demos, but can
 ; be used directly for full C applications loaded into the emulator after compiling with cc65
 
 .segment "STARTUP"

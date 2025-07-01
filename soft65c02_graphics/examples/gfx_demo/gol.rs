@@ -1,25 +1,32 @@
-use std::io::prelude::*;
-use std::fs::File;
-use std::time::{Duration, Instant};
-use std::sync::mpsc::channel;
+/*
+ * Conway's Game of Life Implementation
+ * 
+ * Features:
+ * - Colorful visualization based on neighbor counts  
+ * - Optimized brute-force algorithm (per Rokicki paper)
+ * - 30% random initialization for interesting patterns
+ * - Real-time evolution at 600 Hz with Rust acceleration
+ * - Interactive reset functionality (R key)
+ * 
+ * Color Mapping:
+ * - Dead cells: Black (color 0)
+ * - Live cells: Blue gradient based on neighbor count (colors 1-8)
+ * 
+ * This creates beautiful flowing patterns as cellular automata evolve,
+ * with color intensity representing local population density.
+ */
+
 use rand::Rng;
+use soft65c02_lib::{Memory, AddressableIO};
 
-use soft65c02_graphics::PixelsDisplay;
-use soft65c02_lib::{AddressableIO, Memory, Registers, execute_step};
-use soft65c02_tester::{SymbolTable, CliDisplayer, Displayer};
+// ASCII key codes from ReceivedCharacter events
+const KEY_R: u8 = b'R';  // R key (ASCII 'R' = 0x52)
 
-// this can go up to 16000 in release mode on my PC
-const UPDATES_PER_SECOND: u64 = 600;
-const FRAME_TIME: Duration = Duration::from_micros(1_000_000 / UPDATES_PER_SECOND);
-
-// Memory-mapped locations (relative to display start at 0x8000)
-const DISPLAY_START: usize = 0x8000;
-const PAUSE_FLAG_ADDR: usize = DISPLAY_START + 0x40;      // 0x8040 - pause toggle flag
-const VIDEO_BUFFER_START: usize = DISPLAY_START + 0x100;  // 0x8100
+// Constants for Game of Life
 const SCREEN_WIDTH: usize = 128;
 const SCREEN_HEIGHT: usize = 96;
 const BYTES_PER_ROW: usize = SCREEN_WIDTH / 2;  // 2 pixels per byte
-const APPLICATION_LOAD_START: usize = 0x1000;
+const VIDEO_BUFFER_START: usize = 0x8100;
 
 // Game of Life lookup table - static constant to avoid recreating every call
 const LIFE_RULES: [[u8; 9]; 2] = [
@@ -31,7 +38,7 @@ const LIFE_RULES: [[u8; 9]; 2] = [
 
 // Game of Life state using optimized brute force approach (per Rokicki paper)
 // Now stores neighbor counts for colorful visualization
-struct GameOfLifeState {
+pub struct GameOfLifeState {
     current_generation: Vec<Vec<u8>>,  // 0 = dead, 1-8 = alive with N neighbors
     next_generation: Vec<Vec<u8>>,
     write_buffer: Vec<u8>,  // Reusable buffer for memory writes
@@ -40,7 +47,7 @@ struct GameOfLifeState {
 }
 
 impl GameOfLifeState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             current_generation: vec![vec![0u8; SCREEN_WIDTH]; SCREEN_HEIGHT],
             next_generation: vec![vec![0u8; SCREEN_WIDTH]; SCREEN_HEIGHT],
@@ -50,7 +57,7 @@ impl GameOfLifeState {
         }
     }
     
-    fn reset_to_random(&mut self, memory: &mut Memory) {
+    pub fn reset_to_random(&mut self, memory: &mut Memory) {
         println!("🎲 Generating new random pattern...");
         
         // Generate new random pattern
@@ -85,9 +92,7 @@ impl GameOfLifeState {
         self.generation_count = 0;
     }
     
-
-    
-    fn load_from_memory(&mut self, memory: &Memory) {
+    pub fn load_from_memory(&mut self, memory: &Memory) {
         // Read current state from video buffer directly into 2D array
         for y in 0..SCREEN_HEIGHT {
             let row_offset = y * BYTES_PER_ROW;
@@ -111,7 +116,7 @@ impl GameOfLifeState {
         }
     }
     
-    fn compute_next_generation(&mut self) {
+    pub fn compute_next_generation(&mut self) {
         // Based on Rokicki's paper: simple optimized brute force is often faster 
         // than complex algorithms for this type of pattern
         self.compute_brute_force_optimized();
@@ -155,13 +160,6 @@ impl GameOfLifeState {
             }
         }
         
-        // if self.generation_count % 100 == 0 {
-        //     println!("Gen {}: Colors - Black:{} Blue:{} Green:{} Cyan:{} Yellow:{} Orange:{} Red:{} Purple:{} Magenta:{}", 
-        //         self.generation_count,
-        //         self.color_counts[0], self.color_counts[1], self.color_counts[2], self.color_counts[3], 
-        //         self.color_counts[4], self.color_counts[5], self.color_counts[6], self.color_counts[7], self.color_counts[8]);
-        // }
-        
         std::mem::swap(&mut self.current_generation, &mut self.next_generation);
     }
     
@@ -198,7 +196,7 @@ impl GameOfLifeState {
         self.count_neighbors(&self.next_generation, x, y)
     }
     
-    fn write_to_memory(&mut self, memory: &mut Memory) {
+    pub fn write_to_memory(&mut self, memory: &mut Memory) {
         // Clear reusable buffer instead of allocating new one
         self.write_buffer.fill(0);
         
@@ -222,20 +220,33 @@ impl GameOfLifeState {
         
         // Write directly to video buffer
         memory.write(VIDEO_BUFFER_START, &self.write_buffer).unwrap();
+    }
+    
+    pub fn process_keyboard_input(&mut self, key_code: u8, memory: &mut Memory) -> bool {
+        // Handle keyboard input - accept both upper and lower case for commands
+        match key_code {
+            KEY_R | b'r' => {
+                // R/r key pressed - reset the game with new random pattern
+                println!("🎲 Reset key pressed - generating new random pattern");
+                self.reset_to_random(memory);
+                true  // Request a generation step after reset
+            }
+            _ => {
+                // Unknown key
+                println!("Unknown key pressed: 0x{:02X} ('{}')", key_code, key_code as char);
+                false  // No action needed
+            }
         }
+    }
+
 }
 
-fn main() {
-    let init_vector: usize = APPLICATION_LOAD_START;  // Start program in low memory
-    let mut memory = Memory::new_with_ram();
-    let display = PixelsDisplay::new();
-    memory.add_subsystem("VIDEO DISPLAY", DISPLAY_START, display);
-    
+pub fn get_gol_palette() -> Vec<u8> {
     // Set up a colorful palette for Game of Life based on neighbor density
     // Color 0: Black (dead cells)
     // Colors 1-8: Different colors for live cells based on neighbor count
     // Colors 9-15: Extra colors for visual variety
-    let palette: Vec<u8> = vec![
+    vec![
         // 0: Black (dead cells)
         0x00, 0x00, 0x00,
         // 1: Bright Blue (1 neighbor - very lonely)
@@ -269,178 +280,5 @@ fn main() {
         0x80, 0x80, 0x80,
         // 15: White
         0xFF, 0xFF, 0xFF,
-    ];
-    memory.write(DISPLAY_START, &palette).unwrap();
-    
-    // Initialize Game of Life state for fast computation
-    let mut gol_state = GameOfLifeState::new();
-    // Initialize with random pattern first
-    gol_state.reset_to_random(&mut memory);
-    
-    // Try to load compiled Game of Life binary
-    let program = match load_program_binary("build/gol.bin") {
-        Ok(data) => {
-            println!("Loaded Game of Life binary ({} bytes)", data.len());
-            data
-        }
-        Err(_) => {
-            println!("Binary not found, using built-in demo program");
-            create_demo_program()
-        }
-    };
-    
-    // Load program after initializing display
-    memory.write(init_vector, &program).unwrap();
-    
-    // Load symbols for debugging and trapping
-    let mut symbols = SymbolTable::new();
-    let mut debug_addr = None;
-    let mut process_generation_addr = None;
-    let mut reset_gol_addr = None;
-    let mut start_addr = APPLICATION_LOAD_START;  // Default if symbols not found
-    if let Ok(_) = symbols.load_vice_labels("build/gol.lbl") {
-        println!("Loaded symbol table");
-        debug_addr = symbols.get_address("_debug");
-        if let Some(addr) = debug_addr {
-            println!("Found debug breakpoint at 0x{:04X}", addr);
-        }
-        process_generation_addr = symbols.get_address("_process_generation");
-        if let Some(addr) = process_generation_addr {
-            println!("Found process_generation trap at 0x{:04X}", addr);
-        }
-        reset_gol_addr = symbols.get_address("_reset_gol");
-        if let Some(addr) = reset_gol_addr {
-            println!("Found reset_gol trap at 0x{:04X}", addr);
-        }
-        if let Some(addr) = symbols.get_address("start") {
-            start_addr = addr as usize;
-            println!("Found start address at 0x{:04X}", addr);
-        }
-    }
-
-    let (sender, receiver) = channel();
-    let mut displayer = CliDisplayer::new(std::io::stdout(), true);
-    let display_thread = std::thread::spawn(move || {
-        displayer.display(receiver).unwrap();
-    });
-
-    let mut registers = Registers::new(start_addr);
-    let mut cycle = 0;
-
-    println!("Starting Game of Life simulation...");
-    println!("Running at {} updates per second", UPDATES_PER_SECOND);
-    println!("Close the window to exit.");
-    println!("Using Rust DMA acceleration for Game of Life computation");
-    println!("🎮 Controls:");
-    println!("  'R' = Reset to new random pattern");
-    println!("  'P' = Pause/Resume simulation");
-    println!("Colors represent neighbor density:");
-    println!("  Black(0) = Dead, Blue(1) = 1 neighbor, Green(2) = 2 neighbors (survival)");
-    println!("  Cyan(3) = 3 neighbors (birth/survival), Yellow(4+) = crowded areas");
-    println!("  Orange/Red/Purple = very crowded areas about to die");
-
-    loop {
-        let frame_start = Instant::now();
-        
-        // Check for function traps
-        let current_pc = registers.command_pointer;
-        
-        // Check if we've hit the process_generation trap
-        if let Some(addr) = process_generation_addr {
-            if current_pc == addr as usize {
-                // Check pause flag before processing
-                if let Ok(pause_data) = memory.read(PAUSE_FLAG_ADDR, 1) {
-                    let is_paused = pause_data.len() > 0 && pause_data[0] != 0;
-                    
-                    if !is_paused {
-                        // Load current state from video memory
-                        gol_state.load_from_memory(&memory);
-                        
-                        // Compute next generation in Rust (much faster!)
-                        let _start_time = Instant::now();
-                        gol_state.compute_next_generation();
-                        let _computation_time = _start_time.elapsed();
-                        
-                        // Write result back to video memory
-                        gol_state.write_to_memory(&mut memory);
-                        
-                        // println!("Generation computed in {:?}", _computation_time);
-                    }
-                }
-            }
-        }
-        
-        // Check if we've hit the reset_gol trap
-        if let Some(addr) = reset_gol_addr {
-            if current_pc == addr as usize {
-                gol_state.reset_to_random(&mut memory);
-            }
-        }
-        
-        // Check if we've hit the debug breakpoint
-        if let Some(addr) = debug_addr {
-            if current_pc == addr as usize {
-                println!("Hit debug breakpoint - press Enter to continue...");
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).unwrap();
-            }
-        }
-
-        if let Ok(_instruction) = execute_step(&mut registers, &mut memory) {
-            cycle += 1;
-        } else {
-            println!("Game of Life simulation ended after {} cycles", cycle);
-            break;
-        }
-        
-        // Frame rate limiting
-        let frame_time = frame_start.elapsed();
-        if frame_time < FRAME_TIME {
-            std::thread::sleep(FRAME_TIME - frame_time);
-        }
-    }
-    
-    // Drop the sender to signal the display thread to exit
-    drop(sender);
-    display_thread.join().unwrap();
-    
-    println!("Game of Life simulation ended after {} cycles", cycle);
-}
-
-fn load_program_binary(filename: &str) -> Result<Vec<u8>, std::io::Error> {
-    let mut file = File::open(filename)?;
-    let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer)?;
-    Ok(buffer)
-}
-
-fn create_demo_program() -> Vec<u8> {
-    // Simple demo that creates a blinking pattern if no compiled binary is available
-    // This just fills the screen with a checkerboard pattern that changes over time
-    vec![
-        // Initialize pattern
-        0xa9, 0x01,       // lda #$01        ; Load pattern value
-        0xa2, 0x00,       // ldx #$00        ; X = 0 (column counter)
-        0xa0, 0x00,       // ldy #$00        ; Y = 0 (row counter)
-        
-        // Pattern loop
-        0x8a,             // txa             ; A = X
-        0x18,             // clc
-        0x69, 0x01,       // adc #$01        ; A = X + 1
-        0x4a,             // lsr             ; A = (X + 1) / 2
-        0x29, 0x01,       // and #$01        ; A = ((X + 1) / 2) & 1
-        0x9d, 0x00, 0x01, // sta $0100,X     ; Store to video buffer
-        
-        0xe8,             // inx             ; X++
-        0xe0, 0x00,       // cpx #$00        ; Compare X with 0 (will wrap at 256)
-        0xd0, 0xf1,       // bne pattern_loop; Continue if not zero
-        
-        // Increment pattern and delay
-        0xa9, 0xff,       // lda #$ff        ; Load delay counter
-        0x38,             // sec
-        0xe9, 0x01,       // sbc #$01        ; Decrement
-        0xd0, 0xfc,       // bne delay_loop  ; Continue delay
-        
-        0x4c, 0x04, 0x10, // jmp $1004       ; Jump back to start
     ]
-}
+} 

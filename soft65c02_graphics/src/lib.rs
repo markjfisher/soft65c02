@@ -8,4 +8,4 @@ pub mod pixels_backend;
 pub use minifb_backend::MiniFBDisplay;
 
 #[cfg(feature = "pixels-backend")]
-pub use pixels_backend::PixelsDisplay; 
+pub use pixels_backend::{PixelsDisplay, KEYBOARD_KEY_ADDR}; 

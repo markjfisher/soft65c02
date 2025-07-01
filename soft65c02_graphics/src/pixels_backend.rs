@@ -4,14 +4,24 @@
  * Modern graphics backend using pixels + winit for better cross-platform support,
  * particularly improved Wayland compatibility.
  *
+ * Uses hybrid keyboard input system for international layout compatibility:
+ * - ReceivedCharacter events for all printable characters (numbers, letters, symbols)
+ * - KeyboardInput events only for special keys (arrows, escape, enter)
+ *
  * Internal memory layout (relative to subsystem start):
  * #0x0000 → #0x002F    palette (16 × 3 bytes for RGB)
- * #0x0030 → #0x003F    keyboard keys pressed
+ * #0x0030              keyboard input buffer (single key code byte)
+ * #0x0031 → #0x003F    unused
  * #0x0040 → #0x00FF    unused¹
- * #0x0100 → #0x1900    video buffer
+ * #0x0100 → #0x1900    video buffer (128×96 pixels, 4-bit color, 2 pixels per byte)
  *
  * ¹ Technically this is still RAM so it can be used to just store data. Be aware that it will
  * trigger token inspection on write hence might be less performant than a RAM memory subsystem.
+ *
+ * Keyboard Layout Compatibility:
+ * - All printable characters handled by ReceivedCharacter (layout-aware)
+ * - Special keys (arrows, function keys) handled by KeyboardInput (layout-independent)
+ * - Applications receive proper ASCII values for all character input
  */
 use soft65c02_lib::{AddressableIO, DisplayBackend, memory::MemoryError};
 use pixels::{Pixels, SurfaceTexture};
@@ -40,6 +50,9 @@ pub const DISPLAY_WIDTH: usize = 128;
 pub const DISPLAY_HEIGHT: usize = 96;
 pub const BUFFER_VIDEO_START_ADDR: usize = 0x0100;
 pub const TOTAL_MEMORY_SIZE: usize = 0x1900;  // Up to end of video buffer
+
+// Keyboard buffer layout - export for game modules
+pub const KEYBOARD_KEY_ADDR: usize = 0x30;       // Key code
 
 pub struct CommunicationToken {
     is_calling: AtomicBool,
@@ -91,6 +104,16 @@ impl WindowState {
                 self.token.is_active.store(false, Ordering::SeqCst);
                 *control_flow = ControlFlow::Exit;
             }
+            // Handle character input (layout-aware) - for symbols like +, -, =, etc.
+            WindowEvent::ReceivedCharacter(ch) => {
+                // Pass through ASCII characters exactly as received - let receivers decide case handling
+                if ch.is_ascii() && !ch.is_control() {
+                    let code = ch as u8;
+                    let _ = self.input_tx.send(code as u32);
+                    self.write_to_keyboard_buffer(code);
+                }
+            }
+            // Handle special keys (layout-independent) - arrows, numbers, letters for commands
             WindowEvent::KeyboardInput {
                 input: KeyboardInput {
                     virtual_keycode: Some(key_code),
@@ -99,18 +122,9 @@ impl WindowState {
                 },
                 ..
             } => {
-                let code = get_key_code(key_code);
-                let _ = self.input_tx.send(code as u32);
-                
-                // Write key code to proper keyboard buffer (0x30-0x3F)
-                // For single key events, we'll put it in the first slot and clear others
-                let mut buffer = self.buffer.lock().unwrap();
-                if buffer.len() > 0x3F {
-                    buffer[0x30] = code;  // First key slot
-                    // Clear remaining slots for single-key semantics
-                    for i in 0x31..=0x3F {
-                        buffer[i] = 0;
-                    }
+                if let Some(code) = get_special_key_code(key_code) {
+                    let _ = self.input_tx.send(code as u32);
+                    self.write_to_keyboard_buffer(code);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -120,6 +134,13 @@ impl WindowState {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn write_to_keyboard_buffer(&self, code: u8) {
+        let mut buffer = self.buffer.lock().unwrap();
+        if buffer.len() > KEYBOARD_KEY_ADDR {
+            buffer[KEYBOARD_KEY_ADDR] = code;
         }
     }
     
@@ -249,112 +270,21 @@ fn run_event_loop(
     });
 }
 
-#[allow(dead_code)]
-fn get_key_code(key: VirtualKeyCode) -> u8 {
+// Map only truly special keys that don't produce characters
+// All character input (numbers, letters, symbols) handled by ReceivedCharacter events
+fn get_special_key_code(key: VirtualKeyCode) -> Option<u8> {
     match key {
-        VirtualKeyCode::Key1 => 0x01,
-        VirtualKeyCode::Key2 => 0x02,
-        VirtualKeyCode::Key3 => 0x03,
-        VirtualKeyCode::Key4 => 0x04,
-        VirtualKeyCode::Key5 => 0x05,
-        VirtualKeyCode::Key6 => 0x06,
-        VirtualKeyCode::Key7 => 0x07,
-        VirtualKeyCode::Key8 => 0x08,
-        VirtualKeyCode::Key9 => 0x09,
-        VirtualKeyCode::Key0 => 0x0a,
-        VirtualKeyCode::A => 0x0b,
-        VirtualKeyCode::B => 0x0c,
-        VirtualKeyCode::C => 0x0d,
-        VirtualKeyCode::D => 0x0e,
-        VirtualKeyCode::E => 0x0f,
-        VirtualKeyCode::F => 0x10,
-        VirtualKeyCode::G => 0x11,
-        VirtualKeyCode::H => 0x12,
-        VirtualKeyCode::I => 0x13,
-        VirtualKeyCode::J => 0x14,
-        VirtualKeyCode::K => 0x15,
-        VirtualKeyCode::L => 0x16,
-        VirtualKeyCode::M => 0x17,
-        VirtualKeyCode::N => 0x18,
-        VirtualKeyCode::O => 0x19,
-        VirtualKeyCode::P => 0x1a,
-        VirtualKeyCode::Q => 0x1b,
-        VirtualKeyCode::R => 0x1c,
-        VirtualKeyCode::S => 0x1d,
-        VirtualKeyCode::T => 0x1e,
-        VirtualKeyCode::U => 0x1f,
-        VirtualKeyCode::V => 0x20,
-        VirtualKeyCode::W => 0x21,
-        VirtualKeyCode::X => 0x22,
-        VirtualKeyCode::Y => 0x23,
-        VirtualKeyCode::Z => 0x24,
-        VirtualKeyCode::F1 => 0x25,
-        VirtualKeyCode::F2 => 0x26,
-        VirtualKeyCode::F3 => 0x27,
-        VirtualKeyCode::F4 => 0x28,
-        VirtualKeyCode::F5 => 0x29,
-        VirtualKeyCode::F6 => 0x2a,
-        VirtualKeyCode::F7 => 0x2b,
-        VirtualKeyCode::F8 => 0x2c,
-        VirtualKeyCode::F9 => 0x2d,
-        VirtualKeyCode::F10 => 0x2e,
-        VirtualKeyCode::F11 => 0x2f,
-        VirtualKeyCode::F12 => 0x30,
-        VirtualKeyCode::Down => 0x34,
-        VirtualKeyCode::Left => 0x35,
-        VirtualKeyCode::Right => 0x36,
-        VirtualKeyCode::Up => 0x37,
-        VirtualKeyCode::Apostrophe => 0x38,
-        VirtualKeyCode::Grave => 0x39,
-        VirtualKeyCode::Backslash => 0x3a,
-        VirtualKeyCode::Comma => 0x3b,
-        VirtualKeyCode::Equals => 0x3c,
-        VirtualKeyCode::LBracket => 0x3d,
-        VirtualKeyCode::Minus => 0x3e,
-        VirtualKeyCode::Period => 0x3f,
-        VirtualKeyCode::RBracket => 0x40,
-        VirtualKeyCode::Semicolon => 0x41,
-        VirtualKeyCode::Slash => 0x42,
-        VirtualKeyCode::Back => 0x43,
-        VirtualKeyCode::Delete => 0x44,
-        VirtualKeyCode::End => 0x45,
-        VirtualKeyCode::Return => 0x46,
-        VirtualKeyCode::Escape => 0x47,
-        VirtualKeyCode::Home => 0x48,
-        VirtualKeyCode::Insert => 0x49,
-        VirtualKeyCode::PageDown => 0x4b,
-        VirtualKeyCode::PageUp => 0x4c,
-        VirtualKeyCode::Pause => 0x4d,
-        VirtualKeyCode::Space => 0x4e,
-        VirtualKeyCode::Tab => 0x4f,
-        VirtualKeyCode::Numlock => 0x50,
-        VirtualKeyCode::Capital => 0x51,
-        VirtualKeyCode::Scroll => 0x52,
-        VirtualKeyCode::LShift => 0x53,
-        VirtualKeyCode::RShift => 0x54,
-        VirtualKeyCode::LControl => 0x55,
-        VirtualKeyCode::RControl => 0x56,
-        VirtualKeyCode::Numpad0 => 0x57,
-        VirtualKeyCode::Numpad1 => 0x58,
-        VirtualKeyCode::Numpad2 => 0x59,
-        VirtualKeyCode::Numpad3 => 0x5a,
-        VirtualKeyCode::Numpad4 => 0x5b,
-        VirtualKeyCode::Numpad5 => 0x5c,
-        VirtualKeyCode::Numpad6 => 0x5d,
-        VirtualKeyCode::Numpad7 => 0x5e,
-        VirtualKeyCode::Numpad8 => 0x5f,
-        VirtualKeyCode::Numpad9 => 0x60,
-        VirtualKeyCode::NumpadDecimal => 0x61,
-        VirtualKeyCode::NumpadDivide => 0x62,
-        VirtualKeyCode::NumpadMultiply => 0x63,
-        VirtualKeyCode::NumpadSubtract => 0x64,
-        VirtualKeyCode::NumpadAdd => 0x65,
-        VirtualKeyCode::NumpadEnter => 0x66,
-        VirtualKeyCode::LAlt => 0x67,
-        VirtualKeyCode::RAlt => 0x68,
-        VirtualKeyCode::LWin => 0x69,
-        VirtualKeyCode::RWin => 0x6a,
-        _ => 0x6b, // Unknown
+        // Arrow keys (never produce characters)
+        VirtualKeyCode::Up => Some(0x80),
+        VirtualKeyCode::Down => Some(0x81),
+        VirtualKeyCode::Left => Some(0x82),
+        VirtualKeyCode::Right => Some(0x83),
+        
+        // System keys that don't produce printable characters
+        VirtualKeyCode::Escape => Some(0x1B),
+        VirtualKeyCode::Return => Some(0x0D),
+        
+        _ => None,  // Everything else handled by ReceivedCharacter
     }
 }
 
