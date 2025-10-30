@@ -1493,6 +1493,36 @@ impl<'a> RegisterCommandParser<'a> {
                 }
                 Source::Value(value)
             },
+            Rule::symbol_byte_reference => {
+                let inner = source_node.into_inner().next().unwrap();
+                match inner.as_rule() {
+                    Rule::symbol_low_byte => {
+                        let symbol_name = &inner.as_str()[2..]; // Skip the "<$" prefix
+                        if let Some(symbols) = &self.context.symbols {
+                            if let Some(addr) = symbols.get_address(symbol_name) {
+                                Source::Value((addr as usize) & 0xFF) // Low byte
+                            } else {
+                                return Err(anyhow!("Symbol '{}' not found", symbol_name));
+                            }
+                        } else {
+                            return Err(anyhow!("Symbol table not available for resolving '{}'", symbol_name));
+                        }
+                    },
+                    Rule::symbol_high_byte => {
+                        let symbol_name = &inner.as_str()[2..]; // Skip the ">$" prefix
+                        if let Some(symbols) = &self.context.symbols {
+                            if let Some(addr) = symbols.get_address(symbol_name) {
+                                Source::Value((addr as usize) >> 8) // High byte
+                            } else {
+                                return Err(anyhow!("Symbol '{}' not found", symbol_name));
+                            }
+                        } else {
+                            return Err(anyhow!("Symbol table not available for resolving '{}'", symbol_name));
+                        }
+                    },
+                    v => panic!("unexpected symbol byte reference type '{:?}'", v),
+                }
+            },
             v => panic!("unexpected node '{:?}' here.", v),
         };
 
@@ -1899,6 +1929,146 @@ mod register_parser_tests {
                 && matches!(assignment.source, Source::Value(d) if d == 0x0FFF)
             )
         );
+    }
+
+    #[test]
+    fn test_registers_set_with_symbol_low_byte() {
+        let mut symbols = SymbolTable::new();
+        symbols.add_symbol(0x1234, "test_addr".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        let input = "registers set A = <$test_addr";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                RegisterCommand::Set { assignment }
+                if matches!(assignment.destination, RegisterSource::Accumulator)
+                && matches!(assignment.source, Source::Value(0x34)) // Low byte of 0x1234
+            )
+        );
+    }
+
+    #[test]
+    fn test_registers_set_with_symbol_high_byte() {
+        let mut symbols = SymbolTable::new();
+        symbols.add_symbol(0x1234, "test_addr".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        let input = "registers set X = >$test_addr";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(command,
+                RegisterCommand::Set { assignment }
+                if matches!(assignment.destination, RegisterSource::RegisterX)
+                && matches!(assignment.source, Source::Value(0x12)) // High byte of 0x1234
+            )
+        );
+    }
+
+    #[test]
+    fn test_registers_set_with_symbol_byte_reference_missing_symbol() {
+        let context = ParserContext::new(None);
+        
+        let input = "registers set A = <$missing";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let result = RegisterCommandParser::from_pairs(pairs, &context);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Symbol table not available"));
+    }
+
+    #[test]
+    fn test_registers_set_with_symbol_byte_reference_unknown_symbol() {
+        let symbols = SymbolTable::new();
+        let context = ParserContext::new(Some(&symbols));
+        
+        let input = "registers set Y = >$unknown";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let result = RegisterCommandParser::from_pairs(pairs, &context);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Symbol 'unknown' not found"));
+    }
+
+    #[test]
+    fn test_registers_set_with_symbol_bytes_various_addresses() {
+        let mut symbols = SymbolTable::new();
+        symbols.add_symbol(0x00FF, "low_addr".to_string());
+        symbols.add_symbol(0xFF00, "high_addr".to_string());
+        symbols.add_symbol(0xABCD, "mixed_addr".to_string());
+        let context = ParserContext::new(Some(&symbols));
+        
+        // Test low byte of 0x00FF
+        let input = "registers set A = <$low_addr";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(matches!(command,
+            RegisterCommand::Set { assignment }
+            if matches!(assignment.source, Source::Value(0xFF))
+        ));
+
+        // Test high byte of 0xFF00
+        let input = "registers set X = >$high_addr";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(matches!(command,
+            RegisterCommand::Set { assignment }
+            if matches!(assignment.source, Source::Value(0xFF))
+        ));
+
+        // Test low byte of 0xABCD
+        let input = "registers set Y = <$mixed_addr";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(matches!(command,
+            RegisterCommand::Set { assignment }
+            if matches!(assignment.source, Source::Value(0xCD))
+        ));
+
+        // Test high byte of 0xABCD
+        let input = "registers set A = >$mixed_addr";
+        let pairs = PestParser::parse(Rule::registers_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = RegisterCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(matches!(command,
+            RegisterCommand::Set { assignment }
+            if matches!(assignment.source, Source::Value(0xAB))
+        ));
     }
 }
 

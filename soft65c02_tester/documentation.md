@@ -314,6 +314,27 @@ registers set A=$SMALL
 registers set A=$LARGE
 ```
 
+You can also use symbol byte references to extract the low or high byte of a 16-bit symbol address:
+
+```
+symbols add my_string=0x1234
+
+// Set registers to individual bytes of the address
+registers set A = <$my_string   $$sets A to 0x34 (low byte)$$
+registers set X = >$my_string   $$sets X to 0x12 (high byte)$$
+```
+
+This is particularly useful when you need to pass a 16-bit address to a subroutine that expects the address split across two 8-bit registers, which is a common pattern in 6502/65C02 programming:
+
+```
+symbols add text_buffer=0x2000
+
+// Set up registers for a subroutine that expects address in A (low) and X (high)
+registers set A = <$text_buffer
+registers set X = >$text_buffer
+run $print_string
+```
+
 ### disassemble memory_start length
 
 To output disassembly of memory location, use the command `disassemble memory_start length` where length is a hex value (1-4 digits) specifying how many bytes to disassemble.
