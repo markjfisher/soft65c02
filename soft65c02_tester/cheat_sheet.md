@@ -145,7 +145,7 @@ run $symbol                             // Execute at symbol address
 run init                                // Execute at init vector (0xFFFC-D)
 ```
 
-Unimplemented / invalid opcode (or running into **data** as code): run ends with **TerminatedRun** and **PC unchanged**; use `marker` to reset a stuck plan, or fix memory and `run` again.
+Unimplemented / invalid opcode (or running into **data** as code): run ends with **TerminatedRun** and **PC unchanged**. **Interactive TTY:** inspect / **`run`** again without **`marker`**. **Scripts:** further commands wait until **`marker`** (or use interactive stdin for debugging).
 
 ### Run Until Condition
 ```
@@ -334,6 +334,8 @@ soft65c02_tester -i script.txt             // shorthand for --input-filepath
 **Parse errors:** With **`-c`**, or when input is **stdin** and it is an **interactive terminal** (you typed into the tester directly), malformed lines are skipped with a warning — the process keeps running. **Piped stdin** or **`-i` file** stop on the first bad line unless you pass **`-c`**.
 
 **Memory errors** (e.g. `memory write` into **ROM**): the line is skipped with `Command error (line skipped): …`; the session keeps going (unlike a bare `Error:` exit).
+
+**TerminatedRun** (bad opcode, cycle cap, etc.): With **interactive stdin + TTY**, you can keep issuing **`registers show`**, **`memory show`**, **`run`** — no **`marker`** needed. With **piped stdin** or **`-i` file** input, commands still freeze until **`marker`** (scripted test isolation).
 
 ---
 

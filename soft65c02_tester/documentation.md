@@ -41,6 +41,8 @@ Pass **`-c` / `--continue-on-failure`** to keep running after **assertion failur
 
 If you run the tester with **no script file** (default stdin `-`) **and stdin is an interactive terminal**, parse errors are skipped the same way even without `-c`, so exploratory typing does not exit the whole session. **Piped input** (`cat script.txt | soft65c02_tester`) and reading from **`--input-filepath`** files still halt on the first malformed line unless you pass `-c`.
 
+**Interactive TTY** also enables **recovery after `run` ends with `TerminatedRun`** (cycle limit, unsupported opcode, infinite-loop guard, etc.): the next commands **still run** so you can **`registers show`**, **`memory show`**, **`disassemble`**, or **`run`** again without a **`marker`**. Scripted stdin and file input keep the original behavior (freeze until **`marker`**) so automated test sections stay isolated.
+
 Failed **memory read/write** from the DSL (for example `memory write` into a **ROM** region) does **not** terminate the process: you get a `Command error (line skipped):` message with the memory error text, and the next line runs.
 
 ### memory

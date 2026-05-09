@@ -178,6 +178,13 @@ pub struct ExecutorConfiguration {
 
     /// If true, the executor stops when an assertion fails.
     pub stop_on_failed_assertion: bool,
+
+    /// If **false** (default), after `TerminatedRun` (cycle limit, CPU halt, etc.)
+    /// further commands are skipped until `marker`, matching scripted test plans.
+    /// If **true** (e.g. interactive TTY), `TerminatedRun` still counts toward failure totals but
+    /// does **not** freeze the plan — you can `registers show`, `memory show`, `run` again, etc.
+    /// Assertion failures still respect [`Self::stop_on_failed_assertion`].
+    pub allow_commands_after_terminated_run: bool,
 }
 
 impl Default for ExecutorConfiguration {
@@ -185,6 +192,7 @@ impl Default for ExecutorConfiguration {
         Self {
             ignore_parse_error: false,
             stop_on_failed_assertion: true,
+            allow_commands_after_terminated_run: false,
         }
     }
 }
@@ -240,17 +248,22 @@ impl Executor {
             let (registers, memory, symbols) = round.get_mut();
             let token = command.execute(registers, memory, symbols)?;
 
-            // Count both assertion failures and terminated runs as failures
-            if matches!(token, OutputToken::Assertion { ref failure, description: _ } if failure.is_some())
-                || matches!(token, OutputToken::TerminatedRun { .. })
-            {
+            // Assertion failures: always count; optionally freeze plan per stop_on_failed_assertion.
+            if matches!(
+                token,
+                OutputToken::Assertion {
+                    ref failure,
+                    description: _
+                } if failure.is_some()
+            ) {
                 failed += 1;
                 round.set_failed();
-            }
-
-            // Track TerminatedRun separately from other failures
-            if matches!(token, OutputToken::TerminatedRun { .. }) {
-                had_terminated_run = true;
+            } else if matches!(token, OutputToken::TerminatedRun { .. }) {
+                failed += 1;
+                if !self.configuration.allow_commands_after_terminated_run {
+                    round.set_failed();
+                    had_terminated_run = true;
+                }
             }
 
             sender.send(token)?;
@@ -585,5 +598,32 @@ mod tests {
         assert_eq!(outputs.len(), 2, "Should receive only setup and one TerminatedRun");
         assert!(matches!(outputs[0], OutputToken::Setup(_)));
         assert!(matches!(outputs[1], OutputToken::TerminatedRun { .. }));
+    }
+
+    #[test]
+    fn test_commands_continue_after_terminated_run_when_allowed() {
+        let configuration = ExecutorConfiguration {
+            allow_commands_after_terminated_run: true,
+            ..Default::default()
+        };
+        let executor = Executor::new(configuration);
+        let buffer =
+            "memory write #0x1000 0x(ca,d0,fe)\nrun #0x1000 while cycle_count<5\nassert true $$runs after halt$$\n"
+                .as_bytes();
+        let (sender, receiver) = channel::<OutputToken>();
+
+        let error = executor.run(buffer, sender).unwrap_err();
+        assert!(error.to_string().contains("1 assertions failed"));
+
+        assert!(matches!(receiver.recv().unwrap(), OutputToken::Setup(_)));
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            OutputToken::TerminatedRun { .. }
+        ));
+        assert!(matches!(
+            receiver.recv().unwrap(),
+            OutputToken::Assertion { failure: None, .. }
+        ));
+        assert!(receiver.recv().is_err());
     }
 }

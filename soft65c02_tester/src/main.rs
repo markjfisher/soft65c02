@@ -65,9 +65,9 @@ impl CommandLineArguments {
 }
 fn main() -> Result<()> {
     let parameters = CommandLineArguments::parse();
-    let relax_parse_errors = parameters.continue_on_failure
-        || (parameters.read_from_standard_input()
-            && std::io::stdin().is_terminal());
+    let interactive_tty =
+        parameters.read_from_standard_input() && std::io::stdin().is_terminal();
+    let relax_parse_errors = parameters.continue_on_failure || interactive_tty;
 
     let input_buffer: Box<dyn BufRead> = if parameters.read_from_standard_input() {
         Box::new(std::io::stdin().lock())
@@ -94,6 +94,7 @@ fn main() -> Result<()> {
     let executor = Executor::new(ExecutorConfiguration {
         stop_on_failed_assertion: !parameters.continue_on_failure,
         ignore_parse_error: relax_parse_errors,
+        allow_commands_after_terminated_run: interactive_tty,
     });
     let result = executor.run(input_buffer, sender);
     handler.join().map_err(|e| anyhow!("Join error: {e:?}"))??;
