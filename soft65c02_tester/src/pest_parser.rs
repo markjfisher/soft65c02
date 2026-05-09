@@ -459,12 +459,23 @@ impl<'a> MemoryCommandParser<'a> {
         let command = match pair.as_rule() {
             Rule::memory_flush => MemoryCommand::Flush,
             Rule::memory_write => self.handle_memory_write(pair.into_inner())?,
-            Rule::memory_load => self.handle_memory_load(pair.into_inner())?,
+            Rule::memory_load => {
+                let inner = pair
+                    .into_inner()
+                    .next()
+                    .expect("memory_load should wrap load variant");
+                match inner.as_rule() {
+                    Rule::memory_load_rw => self.handle_memory_load_rw(inner.into_inner())?,
+                    Rule::memory_load_rom => self.handle_memory_load_rom(inner.into_inner())?,
+                    r => return Err(anyhow!("Unknown memory_load inner rule: {:?}", r)),
+                }
+            }
             Rule::memory_fill => self.handle_memory_fill(pair.into_inner())?,
             Rule::symbol_load => self.handle_symbol_load(pair.into_inner())?,
             Rule::symbol_add => self.handle_symbol_add(pair.into_inner())?,
             Rule::symbol_remove => self.handle_symbol_remove(pair.into_inner())?,
             Rule::memory_show => self.handle_memory_show(pair.into_inner())?,
+            Rule::memory_map_show => MemoryCommand::MapShow,
             _ => return Err(anyhow!("Unknown memory command")),
         };
 
@@ -504,7 +515,7 @@ impl<'a> MemoryCommandParser<'a> {
         Ok(MemoryCommand::Write { address, bytes })
     }
 
-    fn handle_memory_load(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+    fn handle_memory_load_rw(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
         let first_arg = pairs
             .next()
             .expect("there shall be a memory address or target argument to memory load");
@@ -514,6 +525,21 @@ impl<'a> MemoryCommandParser<'a> {
             Rule::memory_address => self.handle_address_load(first_arg, pairs.next()),
             _ => panic!("Unexpected first argument to memory load"),
         }
+    }
+
+    fn handle_memory_load_rom(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+        let addr_pair = pairs
+            .next()
+            .expect("memory_load_rom expects a memory address");
+        let address = self.context.parse_memory(&addr_pair)?;
+        let filename_pair = pairs
+            .next()
+            .expect("memory_load_rom expects a filename");
+        let filename = filename_pair.as_str();
+        let stripped = &filename[1..filename.len() - 1];
+        let expanded = MemoryCommandParser::expand_env_vars(stripped);
+        let filepath = PathBuf::from(expanded);
+        Ok(MemoryCommand::LoadRom { address, filepath })
     }
 
     fn expand_env_vars(path: &str) -> String {
@@ -555,7 +581,6 @@ impl<'a> MemoryCommandParser<'a> {
     }
 
     fn handle_address_load(&self, address_pair: Pair<'_, Rule>, filename_pair: Option<Pair<'_, Rule>>) -> AppResult<MemoryCommand> {
-        println!("DEBUG handle_address_load:");
         let address = self.context.parse_memory(&address_pair)?;
         let filename = filename_pair
             .expect("there shall be a filename argument to memory load")
@@ -1036,6 +1061,38 @@ mod memory_command_parser_tests {
     }
 
     #[test]
+    fn test_memory_load_rom_instruction() {
+        let input = "memory load rom #0x8000 \"bios.bin\"";
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::memory_instruction, input)
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+
+        assert!(
+            matches!(
+                command,
+                MemoryCommand::LoadRom { address, filepath }
+                    if address == 0x8000 && filepath == PathBuf::from("bios.bin")
+            )
+        );
+    }
+
+    #[test]
+    fn test_memory_map_show_instruction() {
+        let context = create_test_context();
+        let pairs = PestParser::parse(Rule::memory_instruction, "memory map show")
+            .unwrap()
+            .next()
+            .unwrap()
+            .into_inner();
+        let command = MemoryCommandParser::from_pairs(pairs, &context).unwrap();
+        assert!(matches!(command, MemoryCommand::MapShow));
+    }
+
+    #[test]
     fn test_memory_load_target_parsing() {
 
         // Test Atari target loading
@@ -1050,7 +1107,9 @@ mod memory_command_parser_tests {
         assert!(matches!(pair.as_rule(), Rule::memory_load));
 
         // Verify the inner parts (target and filename)
-        let mut inner = pair.into_inner();
+        let load_rw = pair.into_inner().next().unwrap();
+        assert!(matches!(load_rw.as_rule(), Rule::memory_load_rw));
+        let mut inner = load_rw.into_inner();
         let target = inner.next().unwrap();
         assert_eq!(target.as_str(), "atari");
         assert!(matches!(target.as_rule(), Rule::target_name));
@@ -1069,7 +1128,9 @@ mod memory_command_parser_tests {
         assert!(matches!(pair.as_rule(), Rule::memory_load));
 
         // Verify the inner parts (target and filename)
-        let mut inner = pair.into_inner();
+        let load_rw = pair.into_inner().next().unwrap();
+        assert!(matches!(load_rw.as_rule(), Rule::memory_load_rw));
+        let mut inner = load_rw.into_inner();
         let target = inner.next().unwrap();
         assert_eq!(target.as_str(), "apple");
         assert!(matches!(target.as_rule(), Rule::target_name));
@@ -1102,7 +1163,9 @@ mod memory_command_parser_tests {
         // Just verify the parsing succeeds and produces the expected command type and path
         let pair = pairs.into_iter().next().unwrap();
         assert!(matches!(pair.as_rule(), Rule::memory_load));
-        let mut inner = pair.into_inner();
+        let load_rw = pair.into_inner().next().unwrap();
+        assert!(matches!(load_rw.as_rule(), Rule::memory_load_rw));
+        let mut inner = load_rw.into_inner();
         let target = inner.next().unwrap();
         assert_eq!(target.as_str(), "atari");
         let filename = inner.next().unwrap();
@@ -1119,7 +1182,9 @@ mod memory_command_parser_tests {
         // Verify address load parsing
         let pair = pairs.into_iter().next().unwrap();
         assert!(matches!(pair.as_rule(), Rule::memory_load));
-        let mut inner = pair.into_inner();
+        let load_rw = pair.into_inner().next().unwrap();
+        assert!(matches!(load_rw.as_rule(), Rule::memory_load_rw));
+        let mut inner = load_rw.into_inner();
         let addr = inner.next().unwrap();
         assert!(matches!(addr.as_rule(), Rule::memory_address));
         let filename = inner.next().unwrap();
@@ -1136,7 +1201,9 @@ mod memory_command_parser_tests {
         // Verify environment variable path parsing
         let pair = pairs.into_iter().next().unwrap();
         assert!(matches!(pair.as_rule(), Rule::memory_load));
-        let mut inner = pair.into_inner();
+        let load_rw = pair.into_inner().next().unwrap();
+        assert!(matches!(load_rw.as_rule(), Rule::memory_load_rw));
+        let mut inner = load_rw.into_inner();
         let addr = inner.next().unwrap();
         assert!(matches!(addr.as_rule(), Rule::memory_address));
         let filename = inner.next().unwrap();
@@ -3510,6 +3577,24 @@ mod cli_command_parser_test {
                 filepath
             }) if address == 0x1234 && filepath == PathBuf::from("file.test")
         ));
+    }
+
+    #[test]
+    fn test_memory_load_rom_cli_parser() {
+        let cli_command = CliCommandParser::from("memory load rom #0xABC0 \"rom.img\"").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Memory(MemoryCommand::LoadRom {
+                address,
+                filepath
+            }) if address == 0xABC0 && filepath == PathBuf::from("rom.img")
+        ));
+    }
+
+    #[test]
+    fn test_memory_map_show_cli_parser() {
+        let cli_command = CliCommandParser::from("memory map show").unwrap();
+        assert!(matches!(cli_command, CliCommand::Memory(MemoryCommand::MapShow)));
     }
 
     #[test]

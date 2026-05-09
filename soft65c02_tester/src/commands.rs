@@ -1,6 +1,8 @@
 use std::{fs::File, io::Read, path::PathBuf};
 
-use soft65c02_lib::{execute_step, AddressableIO, LogLine, Memory, Registers};
+use soft65c02_lib::{
+    execute_step, memory::MEMMAX, AddressableIO, LogLine, Memory, Registers,
+};
 
 use crate::{
     until_condition::{Assignment, BooleanExpression, Source, RegisterSource},
@@ -318,6 +320,8 @@ pub struct MemorySegment {
 pub enum MemoryCommand {
     Flush,
     Load { address: usize, filepath: PathBuf },
+    LoadRom { address: usize, filepath: PathBuf },
+    MapShow,
     Write { address: usize, bytes: Vec<u8> },
     Fill { start: usize, end: usize, value: u8 },
     LoadSegments { segments: Vec<MemorySegment> },
@@ -373,15 +377,9 @@ impl Command for MemoryCommand {
                 vec![format!("{} bytes filled with 0x{:02X}", len, value)]
             },
             Self::Load { address, filepath } => {
-                let vec = {
-                    let mut f = File::open(filepath)?;
-                    let mut buffer: Vec<u8> = vec![];
-                    f.read_to_end(&mut buffer)?;
-
-                    buffer
-                };
-                let buffer = vec;
-                memory.write(*address, &buffer).unwrap();
+                let mut buffer: Vec<u8> = Vec::new();
+                File::open(filepath)?.read_to_end(&mut buffer)?;
+                memory.write(*address, &buffer)?;
 
                 vec![format!(
                     "{} bytes loaded from '{}' at #0x{address:04X}.",
@@ -389,6 +387,33 @@ impl Command for MemoryCommand {
                     filepath.display()
                 )]
             }
+            Self::LoadRom { address, filepath } => {
+                let mut buffer: Vec<u8> = Vec::new();
+                File::open(filepath)?.read_to_end(&mut buffer)?;
+                let nbytes = buffer.len();
+                let end_incl = address.checked_add(nbytes).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "ROM size overflow when mapping '{}' at #0x{:04X}",
+                        filepath.display(),
+                        address
+                    )
+                })?;
+                if end_incl > MEMMAX + 1 {
+                    return Err(anyhow::anyhow!(
+                        "ROM image for '{}' exceeds 16-bit space when mapped at #0x{:04X}",
+                        filepath.display(),
+                        address
+                    ));
+                }
+                let name = format!("ROM_{:#06X}", address);
+                memory.mount_rom(&name, *address, buffer);
+                vec![format!(
+                    "ROM mounted as '{}' — {nbytes} bytes from '{}' at #0x{address:04X}.",
+                    name,
+                    filepath.display(),
+                )]
+            }
+            Self::MapShow => memory.get_subsystems_info(),
             Self::LoadSegments { segments } => {
                 for segment in segments {
                     memory.write(segment.address, &segment.data)?;
@@ -961,7 +986,7 @@ mod register_command_tests {
 
 #[cfg(test)]
 mod memory_command_tests {
-    use soft65c02_lib::AddressableIO;
+    use soft65c02_lib::{memory::MemoryError, AddressableIO};
 
     use super::*;
 
@@ -1041,6 +1066,43 @@ mod memory_command_tests {
 
         let expected = "bytes loaded from '../Cargo.toml' at #0x1000.".to_owned();
         assert!(matches!(token, OutputToken::Setup(s) if s[0].contains(&expected)));
+    }
+
+    #[test]
+    fn test_load_rom_rejects_cpu_style_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rom.bin");
+        std::fs::write(&path, &[0xea, 0xea]).unwrap();
+        let command = MemoryCommand::LoadRom {
+            address: 0xe000,
+            filepath: path,
+        };
+        let mut registers = Registers::new_initialized(0);
+        let mut memory = Memory::new_with_ram();
+        command
+            .execute(&mut registers, &mut memory, &mut None)
+            .unwrap();
+
+        assert_eq!(vec![0xea, 0xea], memory.read(0xe000, 2).unwrap());
+        let err = memory.write(0xe000, &[0x01]).unwrap_err();
+        assert_eq!(
+            err,
+            MemoryError::Other(0, "trying to write in a read-only memory")
+        );
+    }
+
+    #[test]
+    fn test_map_show_lists_ram() {
+        let command = MemoryCommand::MapShow;
+        let mut registers = Registers::new_initialized(0);
+        let mut memory = Memory::new_with_ram();
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        if let OutputToken::Setup(lines) = token {
+            assert_eq!(lines.len(), 1);
+            assert!(lines[0].contains("RAM"));
+        } else {
+            panic!("expected Setup");
+        }
     }
 
     #[test]

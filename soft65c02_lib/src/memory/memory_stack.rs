@@ -120,6 +120,11 @@ impl MemoryStack {
 
         output
     }
+
+    /// Map a binary image at `start_address` as [`ROM`] (reject writes unless a later writable region overlays it).
+    pub fn mount_rom(&mut self, name: &str, start_address: usize, data: Vec<u8>) {
+        self.add_subsystem(name, start_address, ROM::new(data));
+    }
 }
 
 impl AddressableIO for MemoryStack {
@@ -320,5 +325,14 @@ mod tests {
             Ok(_) => panic!("this out of buffer read should not succeed"),
             _ => panic!("that was not the expected error"),
         }
+    }
+
+    #[test]
+    fn mount_rom_helper() {
+        let mut m = MemoryStack::default();
+        m.add_subsystem("RAM", 0x0000, RAM::default());
+        m.mount_rom("bios", 0xFF00, vec![0x48, 0x4C]);
+        assert_eq!(vec![0x48, 0x4C], m.read(0xFF00, 2).unwrap());
+        assert!(m.write(0xFF00, &[0]).is_err());
     }
 }

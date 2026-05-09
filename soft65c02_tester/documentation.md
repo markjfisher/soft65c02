@@ -45,7 +45,7 @@ The `memory` instructions are meant to write bytes to memory in order to prepare
 memory flush
 ```
 
-Reset the whole memory with `0x00` values.
+Reset memory to the default flat 64 KiB writable RAM (`0x00`). Any ROM overlays mapped with `memory load rom` are removed.
 
 #### memory load
 
@@ -73,6 +73,27 @@ memory load apple "filename.com"
 
 Loads the given file into memory, as an Apple Single ProDos file.
 The loading address is read from the file.
+
+#### memory load rom
+
+```
+memory load rom #0xE000 "/path/to/rom.bin"
+```
+
+Mount `rom.bin` as a read-only region at `0xE000`. CPU stores and DSL `memory write` / `memory fill`
+that touch this span fail (`trying to write in a read-only memory`). Reads overlay the mutable RAM underneath
+(for the usual `RAM` subsystem placed at `#0x0000`), so fetched bytes come from ROM.
+Use `memory map show` to inspect the subsystem list.
+
+Images are rejected if `#0x{addr} + file_len` spans past `#0xFFFF`.
+
+#### memory map show
+
+```
+memory map show
+```
+
+Lists memory subsystems in map order (`MemoryStack`) with address ranges.
 
 
 #### memory write
