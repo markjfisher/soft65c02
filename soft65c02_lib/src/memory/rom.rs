@@ -29,6 +29,10 @@ impl AddressableIO for ROM {
     fn get_size(&self) -> usize {
         self.rom.len()
     }
+
+    fn is_read_only(&self) -> bool {
+        true
+    }
 }
 
 impl DebugIO for ROM {}

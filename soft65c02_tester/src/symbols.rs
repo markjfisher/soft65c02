@@ -121,6 +121,23 @@ impl SymbolTable {
             }
         }
     }
+
+    /// Name→address pairs for session checkpoints (one row per unique name).
+    pub fn export_address_pairs(&self) -> Vec<(String, u16)> {
+        self.addresses
+            .iter()
+            .map(|(name, &addr)| (name.clone(), addr))
+            .collect()
+    }
+
+    /// Rebuild from [`export_address_pairs`] output.
+    pub fn from_address_pairs(pairs: Vec<(String, u16)>) -> Self {
+        let mut t = Self::new();
+        for (name, addr) in pairs {
+            t.add_symbol(addr, name);
+        }
+        t
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +186,17 @@ mod tests {
         assert!(symbols_at_803.contains(&"entry".to_string()));
 
         Ok(())
+    }
+
+    #[test]
+    fn export_import_address_pairs_roundtrip() {
+        let mut table = SymbolTable::new();
+        table.add_symbol(0x1000, "a".into());
+        table.add_symbol(0x2000, "b".into());
+        let pairs = table.export_address_pairs();
+        let t2 = SymbolTable::from_address_pairs(pairs);
+        assert_eq!(t2.get_address("a"), Some(0x1000));
+        assert_eq!(t2.get_address("b"), Some(0x2000));
     }
 
     #[test]

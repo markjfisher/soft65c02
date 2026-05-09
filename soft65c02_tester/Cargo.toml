@@ -10,10 +10,12 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.102"
+bincode = "1.3.3"
 clap = { version = "4.6.1", features = ["derive"] }
 hex = "0.4.3"
 pest = "2.8.6"
 pest_derive = "2.8.6"
+serde = { version = "1.0.228", features = ["derive"] }
 soft65c02_lib = { path = "../soft65c02_lib" }
 
 [dev-dependencies]

@@ -6,10 +6,13 @@ use std::{
 use anyhow::anyhow;
 use soft65c02_lib::{Memory, Registers};
 
-use crate::{AppResult, CliCommand, CliCommandParser, Command, OutputToken, SymbolTable};
+use crate::{
+    session_checkpoint::SessionCheckpoint, AppResult, CliCommand, CliCommandParser, Command,
+    OutputToken, SymbolTable,
+};
 
 #[derive(Debug)]
-struct ExecutionRound {
+pub(crate) struct ExecutionRound {
     registers: Registers,
     memory: Memory,
     symbols: Option<SymbolTable>,
@@ -67,13 +70,17 @@ where
     B: BufRead,
 {
     pub fn new(iterator: Lines<B>) -> Self {
-        Self { 
+        Self::new_with_seed_symbols(iterator, None)
+    }
+
+    /// Parser symbol seed for continued DSL (must match [`ExecutionRound`] symbol table).
+    pub fn new_with_seed_symbols(iterator: Lines<B>, seed: Option<SymbolTable>) -> Self {
+        Self {
             iterator,
-            symbols: Some(SymbolTable::new()),
+            symbols: Some(seed.unwrap_or_else(SymbolTable::new)),
             state: StreamingState::default(),
         }
     }
-
 }
 
 impl<B> Iterator for CommandIterator<B>
@@ -146,6 +153,11 @@ where
                             symtable.add_symbol(*value, name.clone());
                         }
                     }
+                    CliCommand::Memory(crate::commands::MemoryCommand::RemoveSymbol { name }) => {
+                        if let Some(symtable) = &mut self.symbols {
+                            symtable.remove_symbol(name);
+                        }
+                    }
                     _ => {}
                 }
                 Ok(cmd)
@@ -171,7 +183,7 @@ where
 }
 
 /// Configuration of the executor.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ExecutorConfiguration {
     /// If true, the executor stops when a command cannot be parsed.
     pub ignore_parse_error: bool,
@@ -194,6 +206,169 @@ impl Default for ExecutorConfiguration {
             stop_on_failed_assertion: true,
             allow_commands_after_terminated_run: false,
         }
+    }
+}
+
+/// Shared execution loop for [`Executor::run`] and [`ExecutorSession::run_chunk`].
+pub(crate) fn drive_execution(
+    configuration: &ExecutorConfiguration,
+    round: &mut ExecutionRound,
+    had_terminated_run: &mut bool,
+    commands: impl Iterator<Item = AppResult<CliCommand>>,
+    sender: &Sender<OutputToken>,
+) -> AppResult<()> {
+    let mut failed: usize = 0;
+
+    for result in commands {
+        let command = match result {
+            Err(e) if !configuration.ignore_parse_error => return Err(anyhow!(e)),
+            Err(e) => {
+                sender.send(OutputToken::ParseError {
+                    message: format!("{e:#}"),
+                })?;
+                continue;
+            }
+            Ok(c) => c,
+        };
+
+        if matches!(command, CliCommand::None) {
+            continue;
+        } else if matches!(command, CliCommand::Marker(_)) {
+            *round = ExecutionRound::default();
+            *had_terminated_run = false;
+        } else if *had_terminated_run
+            || (!round.is_ok() && configuration.stop_on_failed_assertion)
+        {
+            continue;
+        }
+        let (registers, memory, symbols) = round.get_mut();
+        let token = command.execute(registers, memory, symbols)?;
+
+        if matches!(
+            token,
+            OutputToken::Assertion {
+                ref failure,
+                description: _
+            } if failure.is_some()
+        ) {
+            failed += 1;
+            round.set_failed();
+        } else if matches!(token, OutputToken::TerminatedRun { .. }) {
+            failed += 1;
+            if !configuration.allow_commands_after_terminated_run {
+                round.set_failed();
+                *had_terminated_run = true;
+            }
+        }
+
+        sender.send(token)?;
+    }
+
+    if failed > 0 {
+        Err(anyhow!("{failed} assertions failed!"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Persistent emulator state for multi-turn DSL (e.g. MCP session): keeps registers, memory, and symbols across chunks.
+#[derive(Debug)]
+pub struct ExecutorSession {
+    configuration: ExecutorConfiguration,
+    round: ExecutionRound,
+    had_terminated_run: bool,
+}
+
+impl ExecutorSession {
+    pub fn new(configuration: ExecutorConfiguration) -> Self {
+        Self {
+            configuration,
+            round: ExecutionRound::default(),
+            had_terminated_run: false,
+        }
+    }
+
+    pub fn configuration(&self) -> &ExecutorConfiguration {
+        &self.configuration
+    }
+
+    pub fn set_configuration(&mut self, configuration: ExecutorConfiguration) {
+        self.configuration = configuration;
+    }
+
+    /// Run DSL lines against the current machine state; state is retained after return (until [`Self::reset`] or a `marker` line).
+    pub fn run_chunk<T: BufRead>(&mut self, buffer: T, sender: &Sender<OutputToken>) -> AppResult<()> {
+        let iter = CommandIterator::new_with_seed_symbols(
+            buffer.lines(),
+            self.round.symbols.clone(),
+        );
+        drive_execution(
+            &self.configuration,
+            &mut self.round,
+            &mut self.had_terminated_run,
+            iter,
+            sender,
+        )
+    }
+
+    /// Replace machine state with a fresh RAM-backed CPU (same as starting a new session).
+    pub fn reset(&mut self) {
+        self.round = ExecutionRound::default();
+        self.had_terminated_run = false;
+    }
+
+    pub fn to_checkpoint(&self) -> SessionCheckpoint {
+        SessionCheckpoint {
+            format_version: crate::session_checkpoint::SESSION_FORMAT_VERSION,
+            registers: self.round.registers.export_snapshot(),
+            memory_regions: self.round.memory.export_regions(),
+            symbols: self
+                .round
+                .symbols
+                .as_ref()
+                .map(|s| s.export_address_pairs())
+                .unwrap_or_default(),
+            round_failed: self.round.failed,
+            had_terminated_run: self.had_terminated_run,
+            ignore_parse_error: self.configuration.ignore_parse_error,
+            stop_on_failed_assertion: self.configuration.stop_on_failed_assertion,
+            allow_commands_after_terminated_run: self.configuration.allow_commands_after_terminated_run,
+        }
+    }
+
+    pub fn from_checkpoint(checkpoint: SessionCheckpoint) -> AppResult<Self> {
+        use soft65c02_lib::MemoryRestoreError;
+
+        if checkpoint.format_version != crate::session_checkpoint::SESSION_FORMAT_VERSION {
+            return Err(anyhow!(
+                "unsupported session checkpoint format version {} (expected {})",
+                checkpoint.format_version,
+                crate::session_checkpoint::SESSION_FORMAT_VERSION
+            ));
+        }
+        let memory = Memory::restore_from_regions(checkpoint.memory_regions).map_err(|e: MemoryRestoreError| anyhow!("{e}"))?;
+        let mut registers = Registers::new(0);
+        registers.apply_snapshot(&checkpoint.registers);
+        let symbols = if checkpoint.symbols.is_empty() {
+            None
+        } else {
+            Some(SymbolTable::from_address_pairs(checkpoint.symbols))
+        };
+        let round = ExecutionRound {
+            registers,
+            memory,
+            symbols,
+            failed: checkpoint.round_failed,
+        };
+        Ok(Self {
+            configuration: ExecutorConfiguration {
+                ignore_parse_error: checkpoint.ignore_parse_error,
+                stop_on_failed_assertion: checkpoint.stop_on_failed_assertion,
+                allow_commands_after_terminated_run: checkpoint.allow_commands_after_terminated_run,
+            },
+            round,
+            had_terminated_run: checkpoint.had_terminated_run,
+        })
     }
 }
 
@@ -222,64 +397,20 @@ impl Executor {
     /// marker.
     pub fn run<T: BufRead>(self, buffer: T, sender: Sender<OutputToken>) -> AppResult<()> {
         let mut round = ExecutionRound::default();
-        let mut failed: usize = 0;
         let mut had_terminated_run = false;
-
-        for result in CommandIterator::new(buffer.lines()) {
-            let command = match result {
-                Err(e) if !self.configuration.ignore_parse_error => return Err(anyhow!(e)),
-                Err(e) => {
-                    sender.send(OutputToken::ParseError {
-                        message: format!("{e:#}"),
-                    })?;
-                    continue;
-                }
-                Ok(c) => c,
-            };
-
-            if matches!(command, CliCommand::None) {
-                continue;
-            } else if matches!(command, CliCommand::Marker(_)) {
-                round = ExecutionRound::default();
-                had_terminated_run = false;
-            } else if had_terminated_run || (!round.is_ok() && self.configuration.stop_on_failed_assertion) {
-                continue;
-            }
-            let (registers, memory, symbols) = round.get_mut();
-            let token = command.execute(registers, memory, symbols)?;
-
-            // Assertion failures: always count; optionally freeze plan per stop_on_failed_assertion.
-            if matches!(
-                token,
-                OutputToken::Assertion {
-                    ref failure,
-                    description: _
-                } if failure.is_some()
-            ) {
-                failed += 1;
-                round.set_failed();
-            } else if matches!(token, OutputToken::TerminatedRun { .. }) {
-                failed += 1;
-                if !self.configuration.allow_commands_after_terminated_run {
-                    round.set_failed();
-                    had_terminated_run = true;
-                }
-            }
-
-            sender.send(token)?;
-        }
-
-        // buffer is exhausted
-        if failed > 0 {
-            Err(anyhow!("{failed} assertions failed!"))
-        } else {
-            Ok(())
-        }
+        drive_execution(
+            &self.configuration,
+            &mut round,
+            &mut had_terminated_run,
+            CommandIterator::new(buffer.lines()),
+            &sender,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
     use std::sync::mpsc::channel;
 
     use super::*;
@@ -625,5 +756,59 @@ mod tests {
             OutputToken::Assertion { failure: None, .. }
         ));
         assert!(receiver.recv().is_err());
+    }
+
+    #[test]
+    fn session_preserves_state_across_chunks() {
+        let cfg = ExecutorConfiguration {
+            stop_on_failed_assertion: false,
+            allow_commands_after_terminated_run: true,
+            ..Default::default()
+        };
+        let mut session = ExecutorSession::new(cfg);
+        let (tx, rx) = channel();
+        session
+            .run_chunk(Cursor::new(b"memory write #0x0200 0x(42)"), &tx)
+            .unwrap();
+        drop(tx);
+        let _: Vec<_> = rx.iter().collect();
+
+        let (tx2, rx2) = channel();
+        session
+            .run_chunk(Cursor::new(b"assert #0x0200=0x42 $$mem$$"), &tx2)
+            .unwrap();
+        drop(tx2);
+        assert!(
+            rx2.into_iter()
+                .any(|t| matches!(t, OutputToken::Assertion { failure: None, .. }))
+        );
+    }
+
+    #[test]
+    fn session_checkpoint_roundtrip_restores_memory() {
+        let mut session = ExecutorSession::new(ExecutorConfiguration::default());
+        let (tx, rx) = channel();
+        session
+            .run_chunk(Cursor::new(b"memory write #0x0400 0x(aa,bb)"), &tx)
+            .unwrap();
+        drop(tx);
+        let _: Vec<_> = rx.iter().collect();
+
+        let cp = session.to_checkpoint();
+        let bytes = crate::encode_session_checkpoint(&cp).unwrap();
+        let cp2 = crate::decode_session_checkpoint(&bytes).unwrap();
+        assert_eq!(cp, cp2);
+
+        let mut restored = ExecutorSession::from_checkpoint(cp2).unwrap();
+        let (tx3, rx3) = channel();
+        restored
+            .run_chunk(Cursor::new(b"assert #0x0400=0xaa $$x$$\nassert #0x0401=0xbb $$y$$"), &tx3)
+            .unwrap();
+        drop(tx3);
+        let assertions_ok = rx3
+            .into_iter()
+            .filter(|t| matches!(t, OutputToken::Assertion { .. }))
+            .all(|t| matches!(t, OutputToken::Assertion { failure: None, .. }));
+        assert!(assertions_ok);
     }
 }

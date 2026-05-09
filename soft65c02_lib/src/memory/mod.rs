@@ -6,7 +6,7 @@ mod ram;
 mod rom;
 
 pub use error::MemoryError;
-pub use memory_stack::MemoryStack;
+pub use memory_stack::{MemoryRegionExport, MemoryRestoreError, MemoryStack};
 pub use ram::RAM;
 pub use rom::ROM;
 
@@ -26,10 +26,15 @@ pub fn little_endian(bytes: Vec<u8>) -> usize {
  * AddressableIO
  * this trait defines the interface for all memory systems
  */
-pub trait AddressableIO {
+pub trait AddressableIO: Send {
     fn read(&self, addr: usize, len: usize) -> Result<Vec<u8>, MemoryError>;
     fn write(&mut self, location: usize, data: &[u8]) -> Result<(), MemoryError>;
     fn get_size(&self) -> usize;
+
+    /// `true` for ROM and other read-only regions; used when persisting memory layout.
+    fn is_read_only(&self) -> bool {
+        false
+    }
 }
 
 /*

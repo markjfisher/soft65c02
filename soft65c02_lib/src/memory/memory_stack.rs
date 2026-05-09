@@ -1,11 +1,52 @@
 use super::*;
 use range_map::Range;
+use serde::{Deserialize, Serialize};
 use std::cmp;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
+/// One memory subsystem for persistence ([`MemoryStack::export_regions`] / [`MemoryStack::restore_from_regions`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryRegionExport {
+    pub name: String,
+    pub start_address: usize,
+    pub read_only: bool,
+    pub data: Vec<u8>,
+}
+
+/// Errors when rebuilding memory from [`MemoryRegionExport`] slices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MemoryRestoreError {
+    EmptyLayout,
+    BadRamSize {
+        name: String,
+        expected: usize,
+        got: usize,
+    },
+    ReadFailed(MemoryError),
+}
+
+impl std::fmt::Display for MemoryRestoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MemoryRestoreError::EmptyLayout => write!(f, "no memory regions in snapshot"),
+            MemoryRestoreError::BadRamSize {
+                name,
+                expected,
+                got,
+            } => write!(
+                f,
+                "RAM region '{name}' must be {expected} bytes, got {got}"
+            ),
+            MemoryRestoreError::ReadFailed(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for MemoryRestoreError {}
+
 struct Subsystem {
-    subsystem: Box<dyn AddressableIO>,
+    subsystem: Box<dyn AddressableIO + Send>,
     address_range: Range<usize>,
     name: String,
 }
@@ -14,7 +55,7 @@ impl Subsystem {
     pub fn new(
         name: &str,
         start_address: usize,
-        subsystem: impl AddressableIO + 'static,
+        subsystem: impl AddressableIO + Send + 'static,
     ) -> Subsystem {
         let sub_len = subsystem.get_size();
 
@@ -44,6 +85,10 @@ impl AddressableIO for Subsystem {
 
     fn get_size(&self) -> usize {
         self.subsystem.get_size()
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.subsystem.is_read_only()
     }
 }
 
@@ -84,7 +129,7 @@ impl MemoryStack {
         &mut self,
         name: &str,
         start_address: usize,
-        memory: impl AddressableIO + 'static,
+        memory: impl AddressableIO + Send + 'static,
     ) {
         let end_address = start_address + memory.get_size();
         let sub = Subsystem::new(name, start_address, memory);
@@ -124,6 +169,50 @@ impl MemoryStack {
     /// Map a binary image at `start_address` as [`ROM`] (reject writes unless a later writable region overlays it).
     pub fn mount_rom(&mut self, name: &str, start_address: usize, data: Vec<u8>) {
         self.add_subsystem(name, start_address, ROM::new(data));
+    }
+
+    /// Export subsystem layout and contents for session persistence.
+    pub fn export_regions(&self) -> Vec<MemoryRegionExport> {
+        self.stack
+            .iter()
+            .map(|sub| {
+                let sz = sub.get_size();
+                let data = sub
+                    .read(0, sz)
+                    .expect("read full subsystem");
+                MemoryRegionExport {
+                    name: sub.name.clone(),
+                    start_address: sub.address_range.start,
+                    read_only: sub.is_read_only(),
+                    data,
+                }
+            })
+            .collect()
+    }
+
+    /// Rebuild a [`MemoryStack`] from [`export_regions`] output (preserve order).
+    pub fn restore_from_regions(regions: Vec<MemoryRegionExport>) -> Result<Self, MemoryRestoreError> {
+        if regions.is_empty() {
+            return Err(MemoryRestoreError::EmptyLayout);
+        }
+        let mut m = MemoryStack::default();
+        for r in regions {
+            if r.read_only {
+                m.mount_rom(&r.name, r.start_address, r.data);
+            } else {
+                if r.data.len() != MEMMAX + 1 {
+                    return Err(MemoryRestoreError::BadRamSize {
+                        name: r.name,
+                        expected: MEMMAX + 1,
+                        got: r.data.len(),
+                    });
+                }
+                let mut arr = [0u8; MEMMAX + 1];
+                arr.copy_from_slice(&r.data[..]);
+                m.add_subsystem(&r.name, r.start_address, RAM::from_boxed(Box::new(arr)));
+            }
+        }
+        Ok(m)
     }
 }
 
@@ -334,5 +423,16 @@ mod tests {
         m.mount_rom("bios", 0xFF00, vec![0x48, 0x4C]);
         assert_eq!(vec![0x48, 0x4C], m.read(0xFF00, 2).unwrap());
         assert!(m.write(0xFF00, &[0]).is_err());
+    }
+
+    #[test]
+    fn export_restore_regions_roundtrip() {
+        let mut m = MemoryStack::new_with_ram();
+        m.write(0x1000, &[0xaa, 0xbb]).unwrap();
+        m.mount_rom("rom", 0xe000, vec![0x01; 32]);
+        let regions = m.export_regions();
+        let m2 = MemoryStack::restore_from_regions(regions).unwrap();
+        assert_eq!(m.read(0x1000, 2).unwrap(), m2.read(0x1000, 2).unwrap());
+        assert_eq!(m.read(0xe000, 4).unwrap(), m2.read(0xe000, 4).unwrap());
     }
 }

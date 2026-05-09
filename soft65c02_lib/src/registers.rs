@@ -23,9 +23,23 @@
 use super::memory::MemoryStack as Memory;
 use super::memory::{AddressableIO, MemoryError};
 use rand::random;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub const STACK_BASE_ADDR: usize = 0x0100;
+
+/// Serializable CPU state for session persistence ([`Registers::export_snapshot`] / [`Registers::apply_snapshot`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegisterSnapshot {
+    pub accumulator: u8,
+    pub register_x: u8,
+    pub register_y: u8,
+    /// Raw stored status byte (not `get_status_register()` which ORs break bits for display).
+    pub status_register: u8,
+    pub command_pointer: usize,
+    pub stack_pointer: u8,
+    pub cycle_count: u64,
+}
 
 pub struct Registers {
     pub accumulator: u8,
@@ -180,6 +194,28 @@ impl Registers {
     pub fn add_cycles(&mut self, cycles: u8) {
         self.cycle_count += cycles as u64;
     }
+
+    pub fn export_snapshot(&self) -> RegisterSnapshot {
+        RegisterSnapshot {
+            accumulator: self.accumulator,
+            register_x: self.register_x,
+            register_y: self.register_y,
+            status_register: self.status_register,
+            command_pointer: self.command_pointer,
+            stack_pointer: self.stack_pointer,
+            cycle_count: self.cycle_count,
+        }
+    }
+
+    pub fn apply_snapshot(&mut self, s: &RegisterSnapshot) {
+        self.accumulator = s.accumulator;
+        self.register_x = s.register_x;
+        self.register_y = s.register_y;
+        self.status_register = s.status_register;
+        self.command_pointer = s.command_pointer;
+        self.stack_pointer = s.stack_pointer;
+        self.cycle_count = s.cycle_count;
+    }
 }
 
 impl fmt::Debug for Registers {
@@ -223,6 +259,20 @@ mod tests {
         assert_eq!(0, registers.register_x);
         assert_eq!(0, registers.register_y);
         assert_eq!(0xff, registers.stack_pointer);
+    }
+
+    #[test]
+    fn snapshot_roundtrip_preserves_state() {
+        let mut r = Registers::new_initialized(0xabcd);
+        r.accumulator = 0x12;
+        r.add_cycles(99);
+        let snap = r.export_snapshot();
+        let mut r2 = Registers::new(0);
+        r2.apply_snapshot(&snap);
+        assert_eq!(r.accumulator, r2.accumulator);
+        assert_eq!(r.command_pointer, r2.command_pointer);
+        assert_eq!(r.cycle_count, r2.cycle_count);
+        assert_eq!(r.export_snapshot(), snap);
     }
 
     #[test]

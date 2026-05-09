@@ -51,6 +51,10 @@ If you run the tester with **no script file** (default stdin `-`) **and stdin is
 
 **Interactive TTY** also enables **recovery after `run` ends with `TerminatedRun`** (cycle limit, unsupported opcode, infinite-loop guard, etc.): the next commands **still run** so you can **`registers show`**, **`memory show`**, **`disassemble`**, or **`run`** again without a **`marker`**. Scripted stdin and file input keep the original behavior (freeze until **`marker`**) so automated test sections stay isolated.
 
+### MCP server (`soft65c02_mcp`)
+
+The MCP exposes **`dsl_execute`** (stateless: fresh machine every call) and **`dsl_session_execute`** (persistent emulator state across tool calls). **`dsl_session_reset`** starts a new session. Checkpoints are bincode blobs with format version **`SESSION_FORMAT_VERSION`** (see `soft65c02_tester::SESSION_FORMAT_VERSION`): **`dsl_session_checkpoint_export`** / **`dsl_session_checkpoint_import`** pass base64 data for portability across MCP reconnects; **`dsl_session_checkpoint_write_file`** / **`dsl_session_checkpoint_read_file`** read and write raw checkpoint bytes on disk. The persistent session uses **`allow_commands_after_terminated_run`** so investigation after a halted **`run`** matches interactive TTY behavior. Instruction-level rollback / deltas are not implemented.
+
 Failed **memory read/write** from the DSL (for example `memory write` into a **ROM** region) does **not** terminate the process: you get a `Command error (line skipped):` message with the memory error text, and the next line runs.
 
 ### memory

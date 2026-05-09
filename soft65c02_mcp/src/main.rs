@@ -1,8 +1,17 @@
 //! MCP stdio server: exposes tools to run and parse the `soft65c02_tester` DSL.
+//!
+//! **Stateful session**: `dsl_session_*` tools share one [`ExecutorSession`] (registers, RAM/ROM,
+//! symbols) across calls for investigative workflows. **`dsl_execute`** remains one-shot (cold
+//! machine each time). Checkpoints use bincode [`SessionCheckpoint`] (format
+//! [`SESSION_FORMAT_VERSION`]) for restart survival; rollbacks / per-instruction deltas are not
+//! implemented yet.
 
 use std::io::{BufRead, Cursor};
 use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     tool, tool_handler, tool_router,
@@ -11,7 +20,8 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use soft65c02_tester::{
-    CommandIterator, Executor, ExecutorConfiguration, OutputToken,
+    decode_session_checkpoint, encode_session_checkpoint, CommandIterator, Executor,
+    ExecutorConfiguration, ExecutorSession, OutputToken, SESSION_FORMAT_VERSION,
 };
 
 const MEMORY_ROM_HINT: &str = r#"ROM overlay (read-only for CPU and memory write/fill):
@@ -23,6 +33,14 @@ Reset (drops ROM regions):
   memory flush
 See soft65c02_tester/documentation.md for the full command set."#;
 
+fn default_session_configuration() -> ExecutorConfiguration {
+    ExecutorConfiguration {
+        stop_on_failed_assertion: false,
+        allow_commands_after_terminated_run: true,
+        ..Default::default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 /// Body for `dsl_execute` / `dsl_parse`.
 pub struct DslScript {
@@ -30,15 +48,31 @@ pub struct DslScript {
     pub dsl: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckpointBlob {
+    /// Standard base64 (padding optional) of bincode [`SessionCheckpoint`] bytes.
+    pub checkpoint_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct CheckpointPath {
+    /// Absolute or workspace path to read/write the checkpoint file (raw bincode bytes).
+    pub path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Soft65Mcp {
     tool_router: ToolRouter<Self>,
+    session: Arc<Mutex<ExecutorSession>>,
 }
 
 impl Soft65Mcp {
     pub fn new() -> Self {
         Self {
             tool_router: Self::tool_router(),
+            session: Arc::new(Mutex::new(ExecutorSession::new(
+                default_session_configuration(),
+            ))),
         }
     }
 }
@@ -46,7 +80,7 @@ impl Soft65Mcp {
 #[tool_router]
 impl Soft65Mcp {
     #[tool(
-        description = "Execute tester DSL lines (memory, registers, run, assert). Collects all OutputToken results; STATUS is \"error\" if the executor returned an error (e.g. failed assertions counted at end)."
+        description = "Execute tester DSL lines on a FRESH machine each call (stateless). Collects OutputToken results; STATUS is \"error\" if the executor returned an error."
     )]
     async fn dsl_execute(&self, body: Parameters<DslScript>) -> String {
         let cfg = ExecutorConfiguration {
@@ -54,6 +88,97 @@ impl Soft65Mcp {
             ..ExecutorConfiguration::default()
         };
         run_dsl(&body.0.dsl, cfg)
+    }
+
+    #[tool(
+        description = "Execute DSL against the PERSISTENT MCP session (same CPU/memory/symbols as prior dsl_session_execute calls). Designed for halted-emulator investigation; uses allow_commands_after_terminated_run. Does not affect dsl_execute."
+    )]
+    async fn dsl_session_execute(&self, body: Parameters<DslScript>) -> String {
+        let mut session = self.session.lock().unwrap();
+        run_session_chunk(&mut session, &body.0.dsl)
+    }
+
+    #[tool(description = "Reset the persistent session to a fresh machine (same defaults as server start).")]
+    async fn dsl_session_reset(&self) -> String {
+        let mut session = self.session.lock().unwrap();
+        *session = ExecutorSession::new(default_session_configuration());
+        "STATUS ok\nsession reset".to_string()
+    }
+
+    #[tool(
+        description = "Serialize the current session to base64 bincode (format SESSION_FORMAT_VERSION). Use for restart survival or passing state across MCP reconnects when combined with dsl_session_checkpoint_import."
+    )]
+    async fn dsl_session_checkpoint_export(&self) -> String {
+        let session = self.session.lock().unwrap();
+        let cp = session.to_checkpoint();
+        drop(session);
+        match encode_session_checkpoint(&cp) {
+            Ok(bytes) => {
+                let b64 = B64.encode(bytes);
+                format!(
+                    "STATUS ok\nformat_version={SESSION_FORMAT_VERSION}\n{b64}"
+                )
+            }
+            Err(e) => format!("STATUS error: {e:#}"),
+        }
+    }
+
+    #[tool(
+        description = "Replace the persistent session from base64 bincode produced by dsl_session_checkpoint_export."
+    )]
+    async fn dsl_session_checkpoint_import(&self, body: Parameters<CheckpointBlob>) -> String {
+        let bytes = match B64.decode(body.0.checkpoint_base64.trim()) {
+            Ok(b) => b,
+            Err(e) => return format!("STATUS error: base64 decode: {e}"),
+        };
+        let cp = match decode_session_checkpoint(&bytes) {
+            Ok(c) => c,
+            Err(e) => return format!("STATUS error: checkpoint decode: {e:#}"),
+        };
+        let restored = match ExecutorSession::from_checkpoint(cp) {
+            Ok(s) => s,
+            Err(e) => return format!("STATUS error: restore session: {e:#}"),
+        };
+        *self.session.lock().unwrap() = restored;
+        "STATUS ok\nsession replaced from checkpoint".to_string()
+    }
+
+    #[tool(description = "Write the current session checkpoint to a file (raw bincode bytes).")]
+    async fn dsl_session_checkpoint_write_file(&self, body: Parameters<CheckpointPath>) -> String {
+        let session = self.session.lock().unwrap();
+        let cp = session.to_checkpoint();
+        drop(session);
+        match encode_session_checkpoint(&cp) {
+            Ok(bytes) => match std::fs::write(&body.0.path, bytes) {
+                Ok(()) => format!(
+                    "STATUS ok\nwrote {} bytes to {}",
+                    std::fs::metadata(&body.0.path)
+                        .map(|m| m.len())
+                        .unwrap_or(0),
+                    body.0.path
+                ),
+                Err(e) => format!("STATUS error: write: {e}"),
+            },
+            Err(e) => format!("STATUS error: encode: {e:#}"),
+        }
+    }
+
+    #[tool(description = "Load a session checkpoint from a file (raw bincode) into the persistent session.")]
+    async fn dsl_session_checkpoint_read_file(&self, body: Parameters<CheckpointPath>) -> String {
+        let bytes = match std::fs::read(&body.0.path) {
+            Ok(b) => b,
+            Err(e) => return format!("STATUS error: read: {e}"),
+        };
+        let cp = match decode_session_checkpoint(&bytes) {
+            Ok(c) => c,
+            Err(e) => return format!("STATUS error: checkpoint decode: {e:#}"),
+        };
+        let restored = match ExecutorSession::from_checkpoint(cp) {
+            Ok(s) => s,
+            Err(e) => return format!("STATUS error: restore session: {e:#}"),
+        };
+        *self.session.lock().unwrap() = restored;
+        format!("STATUS ok\nsession loaded from {}", body.0.path)
     }
 
     #[tool(
@@ -117,6 +242,19 @@ fn run_dsl(dsl: &str, cfg: ExecutorConfiguration) -> String {
     let (tx, rx) = channel::<OutputToken>();
     let executor = Executor::new(cfg);
     let res = executor.run(Cursor::new(dsl.as_bytes()), tx);
+    collect_run_output(res, rx)
+}
+
+fn run_session_chunk(session: &mut ExecutorSession, dsl: &str) -> String {
+    let (tx, rx) = channel::<OutputToken>();
+    let res = session.run_chunk(Cursor::new(dsl.as_bytes()), &tx);
+    collect_run_output(res, rx)
+}
+
+fn collect_run_output(
+    res: soft65c02_tester::AppResult<()>,
+    rx: std::sync::mpsc::Receiver<OutputToken>,
+) -> String {
     let mut blocks = Vec::new();
     while let Ok(tok) = rx.recv() {
         blocks.push(format_token(&tok));

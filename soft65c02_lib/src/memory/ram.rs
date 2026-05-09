@@ -4,6 +4,13 @@ pub struct RAM {
     ram: Box<[u8; MEMMAX + 1]>,
 }
 
+impl RAM {
+    /// Full 65C02 address-space RAM image (`MEMMAX + 1` bytes).
+    pub fn from_boxed(ram: Box<[u8; MEMMAX + 1]>) -> Self {
+        Self { ram }
+    }
+}
+
 impl Default for RAM {
     fn default() -> Self {
         Self {
