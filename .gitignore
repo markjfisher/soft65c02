@@ -4,4 +4,7 @@ Cargo.lock
 /build
 
 kotlin
+
+# IDE artifacts
 /.vscode/
+/.cursor/

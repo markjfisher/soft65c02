@@ -14,8 +14,10 @@ use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
+    model::{InitializeRequestParams, InitializeResult},
+    service::RequestContext,
     tool, tool_handler, tool_router,
-    ServerHandler, ServiceExt,
+    ErrorData as McpError, RoleServer, ServerHandler, ServiceExt,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -23,6 +25,18 @@ use soft65c02_tester::{
     decode_session_checkpoint, encode_session_checkpoint, CommandIterator, Executor,
     ExecutorConfiguration, ExecutorSession, OutputToken, SESSION_FORMAT_VERSION,
 };
+
+/// MCP clients (including Cursor) advertise a concrete protocol version; rmcp's generated
+/// [`ServerHandler::get_info`] uses [`ProtocolVersion::LATEST`](rmcp::model::ProtocolVersion).
+/// If the server answers with a newer version than the client understands, the session can show
+/// as connected while tools never appear. Mirror the client's requested version.
+fn initialize_result_for_peer(
+    mut info: InitializeResult,
+    request: &InitializeRequestParams,
+) -> InitializeResult {
+    info.protocol_version = request.protocol_version.clone();
+    info
+}
 
 const MEMORY_ROM_HINT: &str = r#"ROM overlay (read-only for CPU and memory write/fill):
   memory load rom #0xE000 "/path/to.bin"
@@ -198,7 +212,51 @@ impl Soft65Mcp {
 }
 
 #[tool_handler(router = self.tool_router)]
-impl ServerHandler for Soft65Mcp {}
+impl ServerHandler for Soft65Mcp {
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, McpError> {
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request.clone());
+        }
+        Ok(initialize_result_for_peer(self.get_info(), &request))
+    }
+}
+
+#[cfg(test)]
+mod initialize_peer_tests {
+    use rmcp::model::{
+        ClientCapabilities, Implementation, InitializeRequestParams, ProtocolVersion, ServerInfo,
+    };
+
+    use super::initialize_result_for_peer;
+
+    #[test]
+    fn mirrors_client_protocol_version() {
+        let mut req = InitializeRequestParams::new(
+            ClientCapabilities::default(),
+            Implementation::new("cursor", "0"),
+        );
+        req.protocol_version = ProtocolVersion::V_2024_11_05;
+        let out = initialize_result_for_peer(ServerInfo::default(), &req);
+        assert_eq!(out.protocol_version, ProtocolVersion::V_2024_11_05);
+    }
+
+    #[test]
+    fn tools_list_line_deserializes_like_stdio_codec() {
+        use rmcp::model::ClientJsonRpcMessage;
+        let line = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}"#;
+        let parsed: ClientJsonRpcMessage = serde_json::from_str(line)
+            .expect("same shape as Cursor / test pipes");
+        assert!(matches!(
+            parsed,
+            rmcp::model::ClientJsonRpcMessage::Request(_)
+        ));
+    }
+
+}
 
 fn format_token(t: &OutputToken) -> String {
     match t {
@@ -279,6 +337,7 @@ fn parse_dsl_line_count(dsl: &str) -> soft65c02_tester::AppResult<usize> {
 async fn main() -> anyhow::Result<()> {
     let service = Soft65Mcp::new();
     let transport = rmcp::transport::stdio();
-    let _running = service.serve(transport).await?;
+    let running = service.serve(transport).await?;
+    let _quit = running.waiting().await.map_err(anyhow::Error::from)?;
     Ok(())
 }
