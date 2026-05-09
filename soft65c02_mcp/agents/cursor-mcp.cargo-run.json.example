@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "soft65c02": {
+      "command": "cargo",
+      "args": ["run", "-p", "soft65c02_mcp", "--release", "--quiet"],
+      "cwd": "/absolute/path/to/soft65c02"
+    }
+  }
+}

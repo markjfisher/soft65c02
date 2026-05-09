@@ -1,0 +1,23 @@
+---
+description: Use Soft65C02 MCP (65C02 emulator tester DSL) when the user asks to load binaries, ROMs, run code, or inspect the emulated machine.
+alwaysApply: false
+---
+
+## Soft65C02 MCP
+
+When the user wants emulator / tester behavior **through MCP**, use the **`soft65c02`** MCP tools.
+
+- **`dsl_session_execute`** — **Default for multi-step work.** State (RAM, ROM map, registers, symbols) persists across tool calls.
+- **`dsl_execute`** — One-shot; fresh machine every time.
+- **`dsl_session_reset`** — New session.
+- **Checkpoints:** `dsl_session_checkpoint_export`, `dsl_session_checkpoint_import`, `dsl_session_checkpoint_write_file`, `dsl_session_checkpoint_read_file` for surviving MCP/host restarts.
+
+**You** compose tester **DSL** strings; the user should describe goals in plain language. Ground DSL in **`soft65c02_tester/documentation.md`** (path in this workspace or as provided by the user).
+
+### Natural language → DSL
+
+Map requests to documented commands: `memory load`, `memory load rom`, `memory load atari|apple`, `run`, `registers`, `memory show`, `disassemble`, `assert`, `symbols`, `marker`, `help`. Choose **Atari** vs **Apple** vs raw **`memory load #addr`** from context; ask one question if the format is ambiguous.
+
+### Cursor `call_mcp_tool` note
+
+If programmatic calls require a **`serverIdentifier`** instead of the label `soft65c02`, discover it under `~/.cursor/projects/*/mcps/*/SERVER_METADATA.json` (match `serverName` to your configured server).

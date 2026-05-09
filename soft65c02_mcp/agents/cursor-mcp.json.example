@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "soft65c02": {
+      "command": "/absolute/path/to/soft65c02/target/release/soft65c02_mcp"
+    }
+  }
+}

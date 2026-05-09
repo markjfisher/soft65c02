@@ -1,0 +1,24 @@
+# Soft65C02 MCP (Claude Code / project context)
+
+This project uses the **`soft65c02`** MCP server to run **Soft65C02 tester DSL** against a virtual 65C02.
+
+## MCP tools (names may vary by client)
+
+- **`dsl_session_execute`** — persistent emulator session (preferred for debugging).
+- **`dsl_execute`** — fresh machine each call.
+- **`dsl_session_reset`**, **`dsl_session_checkpoint_*`** — session lifecycle and restart survival.
+- **`dsl_parse`**, **`dsl_memory_rom_reference`** — helpers.
+
+## Your job
+
+Translate the user’s **natural language** (load file, ROM at address, run from PC, assert memory) into **valid DSL**. Do **not** require the user to paste DSL unless they want to.
+
+**Syntax and examples:** read **`soft65c02_tester/documentation.md`** from the Soft65C02 checkout (set a path below if this file lives elsewhere).
+
+Suggested doc path (edit to match this machine):
+
+`@/absolute/path/to/soft65c02/soft65c02_tester/documentation.md`
+
+## Windows
+
+Use absolute paths in MCP config; in DSL quoted filenames may use `/` or escaped `\\`.
