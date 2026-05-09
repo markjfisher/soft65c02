@@ -312,6 +312,11 @@ where
                     self.output
                         .write_all(format!("📄 {description}\n").as_bytes())?;
                 }
+                OutputToken::Help(lines) => {
+                    for line in lines {
+                        self.output.write_all(format!("{line}\n").as_bytes())?;
+                    }
+                }
                 OutputToken::ParseError { message } => {
                     self.output.write_all(
                         format!("⚠️ Parse error (line skipped):\n{message}\n").as_bytes(),

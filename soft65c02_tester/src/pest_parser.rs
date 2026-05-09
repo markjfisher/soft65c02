@@ -3492,9 +3492,10 @@ impl<'a> CliCommandParser<'a> {
                 };
                 CliCommand::Disable(function)
             }
+            Rule::help_instruction => CliCommand::Help,
             _ => {
                 panic!(
-                    "'{}' was not expected here: 'register|memory|run|assert|reset|symbols|disassemble|enable|disable instruction'.",
+                    "'{}' was not expected here: 'register|memory|run|assert|marker|symbols|disassemble|enable|disable|help instruction'.",
                     pair.as_str()
                 );
             }
@@ -3730,6 +3731,15 @@ mod cli_command_parser_test {
         assert!(CliCommandParser::from("disable").is_err()); // Missing function name
         assert!(CliCommandParser::from("enable unknown_function").is_err()); // Unknown function
         assert!(CliCommandParser::from("disable unknown_function").is_err()); // Unknown function
+    }
+
+    #[test]
+    fn test_help_command_parser() {
+        let cli_command = CliCommandParser::from("help").unwrap();
+        assert!(matches!(cli_command, CliCommand::Help));
+
+        let cli_command = CliCommandParser::from("HELP").unwrap();
+        assert!(matches!(cli_command, CliCommand::Help));
     }
 }
 

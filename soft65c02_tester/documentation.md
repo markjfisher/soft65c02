@@ -25,6 +25,14 @@ memory write #0x1234 0x(00,01,02)
 
 Both comment styles consume the entire line from the comment marker to the end of the line. Empty lines and comment-only lines are ignored during execution.
 
+### help
+
+```
+help
+```
+
+Prints a short summary of command syntax to stdout. Output is always shown (it does not depend on verbose mode).
+
 ### marker
 
 ```

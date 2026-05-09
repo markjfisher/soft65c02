@@ -41,6 +41,8 @@ pub enum OutputToken {
     },
     Setup(Vec<String>),
     View(Vec<String>),
+    /// Built-in command summary; always printed (not gated on `-v`).
+    Help(Vec<String>),
     ControlAction {
         function: ControllableFunction,
         enabled: bool,
@@ -76,6 +78,7 @@ pub enum CliCommand {
     Disassemble { start: usize, end: usize },
     Enable(ControllableFunction),
     Disable(ControllableFunction),
+    Help,
 }
 
 impl Command for CliCommand {
@@ -102,8 +105,29 @@ impl Command for CliCommand {
                 function: function.clone(), 
                 enabled: false 
             }),
+            Self::Help => Ok(OutputToken::Help(tester_help_summary())),
         }
     }
+}
+
+/// Short DSL syntax reference for the built-in `help` command.
+pub fn tester_help_summary() -> Vec<String> {
+    vec![
+        "Soft65c02 tester DSL — syntax sketch:".into(),
+        "marker $$description$$".into(),
+        "registers flush | registers set <assignments> | registers show [A|X|Y|SP|S|CP|cycle_count]"
+            .into(),
+        "memory flush | memory load <atari|apple|#addr> \"file\" | memory load rom #addr \"file\""
+            .into(),
+        "memory write #addr bytes | memory fill #from ~ #to [byte] | memory show … | memory map show"
+            .into(),
+        "symbols load \"file\" | symbols add name = value | symbols remove name".into(),
+        "run [init|#addr] [until|while <condition>]".into(),
+        "assert <condition> $$description$$  (AND OR NOT; comparators = != < > etc.)".into(),
+        "disassemble #addr 0x<hex_length>".into(),
+        "enable trace_logging | disable trace_logging".into(),
+        "help  — print this summary".into(),
+    ]
 }
 
 #[derive(Debug)]
@@ -1536,6 +1560,24 @@ mod control_command_tests {
             function: ControllableFunction::TraceLogging, 
             enabled: false 
         }));
+    }
+
+    #[test]
+    fn test_help_command_execution() {
+        let command = CliCommand::Help;
+        let mut registers = Registers::new(0x0000);
+        let mut memory = Memory::new_with_ram();
+        let mut symbols = None;
+
+        let result = command.execute(&mut registers, &mut memory, &mut symbols).unwrap();
+
+        match result {
+            OutputToken::Help(lines) => {
+                assert!(lines.iter().any(|l| l.contains("marker")));
+                assert!(lines.iter().any(|l| l.contains("help")));
+            }
+            _ => panic!("expected OutputToken::Help"),
+        }
     }
 
     #[test]

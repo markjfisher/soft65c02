@@ -10,7 +10,10 @@ instruction = { registers_instruction |
     symbols_instruction |
     disassemble_instruction |
     enable_instruction |
-    disable_instruction }
+    disable_instruction |
+    help_instruction }
+
+help_instruction = { ^"help" }
 
 marker = {^"marker" ~ "$$" ~ description ~ "$$" }
 
