@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, IsTerminal, Write},
     path::PathBuf,
     sync::mpsc::channel,
 };
@@ -27,7 +27,8 @@ pub struct CommandLineArguments {
     #[arg(short, long, default_value = "-")]
     output_filepath: PathBuf,
 
-    /// Do not stop execution of a plan when an assertion fails.
+    /// Do not stop on assertion failures, and skip (with a visible message) lines that fail to parse.
+    /// When reading scripts from stdin, parse errors are also skipped automatically if stdin is an interactive terminal.
     #[arg(short, long)]
     continue_on_failure: bool,
 
@@ -64,6 +65,9 @@ impl CommandLineArguments {
 }
 fn main() -> Result<()> {
     let parameters = CommandLineArguments::parse();
+    let relax_parse_errors = parameters.continue_on_failure
+        || (parameters.read_from_standard_input()
+            && std::io::stdin().is_terminal());
 
     let input_buffer: Box<dyn BufRead> = if parameters.read_from_standard_input() {
         Box::new(std::io::stdin().lock())
@@ -89,7 +93,7 @@ fn main() -> Result<()> {
     let handler = std::thread::spawn(move || displayer.display(receiver));
     let executor = Executor::new(ExecutorConfiguration {
         stop_on_failed_assertion: !parameters.continue_on_failure,
-        ..Default::default()
+        ignore_parse_error: relax_parse_errors,
     });
     let result = executor.run(input_buffer, sender);
     handler.join().map_err(|e| anyhow!("Join error: {e:?}"))??;

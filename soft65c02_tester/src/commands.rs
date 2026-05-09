@@ -21,6 +21,14 @@ pub enum OutputToken {
     Marker {
         description: String,
     },
+    /// A line failed to parse; execution continues (`ignore_parse_error` mode).
+    ParseError {
+        message: String,
+    },
+    /// A command ran but memory I/O failed (e.g. write to ROM); session continues.
+    ExecutionError {
+        message: String,
+    },
     None,
     Run {
         loglines: Vec<LogLine>,
@@ -340,13 +348,17 @@ impl Command for MemoryCommand {
             }
             Self::Write { address, bytes } => match bytes.len() {
                 0 => vec!["nothing was written".to_string()],
-                1 => {
-                    memory.write(*address, bytes)?;
-                    vec!["1 byte written".to_string()]
-                }
-                n => {
-                    memory.write(*address, bytes)?;
-                    vec![format!("{n} bytes written")]
+                _ => {
+                    if let Err(e) = memory.write(*address, bytes) {
+                        return Ok(OutputToken::ExecutionError {
+                            message: format!("{e}"),
+                        });
+                    }
+                    if bytes.len() == 1 {
+                        vec!["1 byte written".to_string()]
+                    } else {
+                        vec![format!("{} bytes written", bytes.len())]
+                    }
                 }
             },
             Self::Fill { start, end, value } => {
@@ -369,7 +381,11 @@ impl Command for MemoryCommand {
                 while remaining > 0 {
                     let write_size = remaining.min(chunk_size);
                     let chunk = vec![*value; write_size];
-                    memory.write(current_addr, &chunk)?;
+                    if let Err(e) = memory.write(current_addr, &chunk) {
+                        return Ok(OutputToken::ExecutionError {
+                            message: format!("{e}"),
+                        });
+                    }
                     current_addr = current_addr.wrapping_add(write_size);
                     remaining -= write_size;
                 }
@@ -379,7 +395,11 @@ impl Command for MemoryCommand {
             Self::Load { address, filepath } => {
                 let mut buffer: Vec<u8> = Vec::new();
                 File::open(filepath)?.read_to_end(&mut buffer)?;
-                memory.write(*address, &buffer)?;
+                if let Err(e) = memory.write(*address, &buffer) {
+                    return Ok(OutputToken::ExecutionError {
+                        message: format!("{e}"),
+                    });
+                }
 
                 vec![format!(
                     "{} bytes loaded from '{}' at #0x{address:04X}.",
@@ -416,7 +436,11 @@ impl Command for MemoryCommand {
             Self::MapShow => memory.get_subsystems_info(),
             Self::LoadSegments { segments } => {
                 for segment in segments {
-                    memory.write(segment.address, &segment.data)?;
+                    if let Err(e) = memory.write(segment.address, &segment.data) {
+                        return Ok(OutputToken::ExecutionError {
+                            message: format!("{e}"),
+                        });
+                    }
                 }
                 vec![format!("{} segments loaded.", segments.len())]
             }
@@ -448,7 +472,14 @@ impl Command for MemoryCommand {
                 }
             },
             Self::Show { address, length, width, description } => {
-                let data = memory.read(*address, *length)?;
+                let data = match memory.read(*address, *length) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return Ok(OutputToken::ExecutionError {
+                            message: format!("{e}"),
+                        });
+                    }
+                };
                 let mut output = Vec::new();
                 if let Some(desc) = description {
                     output.push(desc.clone());
@@ -1088,6 +1119,28 @@ mod memory_command_tests {
         assert_eq!(
             err,
             MemoryError::Other(0, "trying to write in a read-only memory")
+        );
+    }
+
+    #[test]
+    fn test_write_command_rom_returns_execution_error_token() {
+        let command = MemoryCommand::Write {
+            address: 0xe000,
+            bytes: vec![0x01],
+        };
+        let mut registers = Registers::new_initialized(0);
+        let mut memory = Memory::new_with_ram();
+        memory.mount_rom("ROM_TEST", 0xe000, vec![0xea]);
+        let token = command
+            .execute(&mut registers, &mut memory, &mut None)
+            .unwrap();
+
+        assert!(
+            matches!(
+                token,
+                OutputToken::ExecutionError { ref message } if message.contains("read-only memory")
+            ),
+            "got {token:?}"
         );
     }
 

@@ -312,6 +312,16 @@ where
                     self.output
                         .write_all(format!("📄 {description}\n").as_bytes())?;
                 }
+                OutputToken::ParseError { message } => {
+                    self.output.write_all(
+                        format!("⚠️ Parse error (line skipped):\n{message}\n").as_bytes(),
+                    )?;
+                }
+                OutputToken::ExecutionError { message } => {
+                    self.output.write_all(
+                        format!("⚠️ Command error (line skipped):\n{message}\n").as_bytes(),
+                    )?;
+                }
                 OutputToken::Run { loglines, symbols } | OutputToken::TerminatedRun { loglines, symbols, .. } => {
                     let mut content = String::new();
                     

@@ -20,14 +20,25 @@ Starts a new test plan with fresh state.
 ```
 memory flush
 ```
-Clear all memory to 0x00.
+Reset to default flat 64 KiB RAM (all `0x00`). Removes any ROM overlays from `memory load rom`.
 
 ### Memory Load
 ```
-memory load #0x1234 "file.bin"          // Load at specific address
+memory load #0x1234 "file.bin"          // Load at specific address (writable RAM)
 memory load atari "program.xex"         // Load Atari binary (honors segments)
 memory load apple "program.com"         // Load Apple Single format
 memory load $symbol "file.bin"          // Load at symbol address
+```
+
+### Memory Load ROM (read-only)
+```
+memory load rom #0xE000 "bios.bin"     // Mount file as ROM — reads use ROM, writes fail
+```
+Use after `memory load`/writes for mutable RAM. ROM must fit in 16-bit space (`addr` + file size ≤ `#0x10000`).
+
+### Memory Map Show
+```
+memory map show                         // Subsystems (RAM, ROM_#0x…) and address ranges
 ```
 
 ### Memory Write
@@ -305,6 +316,25 @@ NOT         // Logical NOT
 
 ---
 
+## Tester binary (CLI)
+
+```
+soft65c02_tester [OPTIONS]              // default: read script from stdin (-)
+soft65c02_tester -i script.txt             // shorthand for --input-filepath
+```
+
+| Option | Effect |
+|--------|--------|
+| **`-c`** / `--continue-on-failure` | Keep running after failed **assertions**, and **skip bad lines** instead of exiting (each parse error prints `Parse error (line skipped): …`). |
+| **`-v`** / `--verbose` | Print setup / disassembly-style output, not only assertions. |
+| **`-p`** / `--parse` | Parse script only, no execution. |
+
+**Parse errors:** With **`-c`**, or when input is **stdin** and it is an **interactive terminal** (you typed into the tester directly), malformed lines are skipped with a warning — the process keeps running. **Piped stdin** or **`-i` file** stop on the first bad line unless you pass **`-c`**.
+
+**Memory errors** (e.g. `memory write` into **ROM**): the line is skipped with `Command error (line skipped): …`; the session keeps going (unlike a bare `Error:` exit).
+
+---
+
 ## Quick Examples
 
 ### Setup and Test Pattern
@@ -341,3 +371,13 @@ assert $array+3 = 0x00 $$rest is zero$$
 registers set cycle_count = 0
 run $function
 assert cycle_count < 300 $$under cycle budget$$
+```
+
+### ROM overlay
+```
+memory flush
+memory load #0x0000 "ram_image.bin"
+memory load rom #0xE000 "rom.bin"
+memory map show                         // sanity-check regions
+run #0x0800                             // ROM range is not writable via memory write
+```

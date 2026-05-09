@@ -79,6 +79,8 @@ fn format_token(t: &OutputToken) -> String {
     match t {
         OutputToken::None => "(none)".to_string(),
         OutputToken::Marker { description } => format!("marker: {description}"),
+        OutputToken::ParseError { message } => format!("PARSE ERROR: {message}"),
+        OutputToken::ExecutionError { message } => format!("EXECUTION ERROR: {message}"),
         OutputToken::Setup(lines) => lines.join("\n"),
         OutputToken::View(lines) => lines.join("\n"),
         OutputToken::Assertion { failure, description } => {
@@ -136,7 +138,6 @@ fn parse_dsl_line_count(dsl: &str) -> soft65c02_tester::AppResult<usize> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    println!("Running soft65c02 MCP server");
     let service = Soft65Mcp::new();
     let transport = rmcp::transport::stdio();
     let _running = service.serve(transport).await?;

@@ -33,7 +33,15 @@ marker $$marker description$$
 
 The `marker` keyword initialize a new test plan. It sets the registers in a random state as the 65C02 when it starts and initializes the memory with 0x00 values.
 
-There can be several test plans in a test script. Unless `continue_on_failure` parameter is set, if an assertion fails in a test plan the rest of the instructions will be ignored until the next `marker` keyword (or the end of the script) is reached.
+There can be several test plans in a test script. Unless `continue_on_failure` (`-c`) is set, if an assertion fails in a test plan the rest of the instructions will be ignored until the next `marker` keyword (or the end of the script) is reached.
+
+## Command-line behavior
+
+Pass **`-c` / `--continue-on-failure`** to keep running after **assertion failures** and to **treat parse errors as non-fatal** (each bad line prints a warning and is skipped).
+
+If you run the tester with **no script file** (default stdin `-`) **and stdin is an interactive terminal**, parse errors are skipped the same way even without `-c`, so exploratory typing does not exit the whole session. **Piped input** (`cat script.txt | soft65c02_tester`) and reading from **`--input-filepath`** files still halt on the first malformed line unless you pass `-c`.
+
+Failed **memory read/write** from the DSL (for example `memory write` into a **ROM** region) does **not** terminate the process: you get a `Command error (line skipped):` message with the memory error text, and the next line runs.
 
 ### memory
 

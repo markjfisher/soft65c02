@@ -193,6 +193,9 @@ impl Default for ExecutorConfiguration {
 /// registers and maintain them during the execution of the plan. It ensures
 /// that the process stops if the Command Pointer register is unchanged after a
 /// command execution (if the configuration allows it) or when an error occures.
+///
+/// When `ignore_parse_error` is set, malformed lines emit `OutputToken::ParseError` and
+/// execution continues.
 /// All outputs are sent to a channel receiver.
 #[derive(Debug, Default)]
 pub struct Executor {
@@ -217,7 +220,12 @@ impl Executor {
         for result in CommandIterator::new(buffer.lines()) {
             let command = match result {
                 Err(e) if !self.configuration.ignore_parse_error => return Err(anyhow!(e)),
-                Err(_) => continue,
+                Err(e) => {
+                    sender.send(OutputToken::ParseError {
+                        message: format!("{e:#}"),
+                    })?;
+                    continue;
+                }
                 Ok(c) => c,
             };
 
@@ -288,7 +296,28 @@ mod tests {
 
         executor.run(buffer, sender).unwrap();
 
-        assert_eq!(2, receiver.iter().count());
+        assert_eq!(3, receiver.iter().count());
+    }
+
+    #[test]
+    fn test_parse_error_emits_token_when_ignored() {
+        let configuration = ExecutorConfiguration {
+            ignore_parse_error: true,
+            ..ExecutorConfiguration::default()
+        };
+        let executor = Executor::new(configuration);
+        let buffer = "assert true $$x$$\nutter nonsense\nmemory flush".as_bytes();
+        let (sender, receiver) = channel::<OutputToken>();
+
+        executor.run(buffer, sender).unwrap();
+
+        let tokens: Vec<_> = receiver.iter().collect();
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, OutputToken::ParseError { .. })),
+            "expected a parse error token, got {tokens:?}"
+        );
     }
 
     #[test]
