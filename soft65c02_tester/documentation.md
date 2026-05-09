@@ -410,7 +410,9 @@ The output contains labels and names where they match:
 
 #### running step by step
 
-The `run` keyword performs execution of instructions that modify the state of the memory and/or the registers. When used alone, the instruction in the memory pointed at from the `CP` register is executed. 
+The `run` keyword performs execution of instructions that modify the state of the memory and/or the registers. When used alone, the instruction in the memory pointed at from the `CP` register is executed.
+
+If the CPU hits an **invalid or unimplemented opcode** (including executing **data** as code after a bug), the run **ends** with a **`TerminatedRun`** message, **`CP` stays** on that byte, and the tester **does not crash**—you can fix memory or registers and run again. The same applies to other CPU fetch/execute failures during `run`.
 
 ```
 registers flush

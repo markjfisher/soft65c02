@@ -145,6 +145,8 @@ run $symbol                             // Execute at symbol address
 run init                                // Execute at init vector (0xFFFC-D)
 ```
 
+Unimplemented / invalid opcode (or running into **data** as code): run ends with **TerminatedRun** and **PC unchanged**; use `marker` to reset a stuck plan, or fix memory and `run` again.
+
 ### Run Until Condition
 ```
 run until A = 0x42                      // Run until condition is true

@@ -1,7 +1,7 @@
 use std::{fs::File, io::Read, path::PathBuf};
 
 use soft65c02_lib::{
-    execute_step, memory::MEMMAX, AddressableIO, LogLine, Memory, Registers,
+    execute_step, memory::MEMMAX, AddressableIO, CPUError, LogLine, Memory, Registers,
 };
 
 use crate::{
@@ -136,6 +136,16 @@ pub struct RunCommand {
     pub start_address: Option<RunAddress>,
 }
 
+fn cpu_halt_reason(pc: usize, err: &CPUError) -> String {
+    match err {
+        CPUError::UnsupportedOpcode { address, opcode } => format!(
+            "Unsupported opcode 0x{:02x} at #0x{:04X} (PC unchanged); not implemented or data executed as code",
+            opcode, address
+        ),
+        _ => format!("CPU stopped at #0x{:04X}: {}", pc, err),
+    }
+}
+
 impl Command for RunCommand {
     fn execute(&self, registers: &mut Registers, memory: &mut Memory, symbols: &mut Option<SymbolTable>) -> AppResult<OutputToken> {
         if let Some(addr) = &self.start_address {
@@ -157,7 +167,17 @@ impl Command for RunCommand {
         
         // solve() returns None for truthy conditions (should continue)
         while self.continue_condition.solve(registers, memory).is_none() {
-            let line = execute_step(registers, memory)?;
+            let line = match execute_step(registers, memory) {
+                Ok(line) => line,
+                Err(e) => {
+                    let pc = registers.command_pointer;
+                    return Ok(OutputToken::TerminatedRun {
+                        loglines,
+                        symbols: symbols.clone(),
+                        reason: cpu_halt_reason(pc, &e),
+                    });
+                }
+            };
             loglines.push(line);
 
             let should_stop = self.stop_condition.solve(registers, memory).is_none();
@@ -584,6 +604,29 @@ mod run_command_tests {
         assert!(matches!(token, OutputToken::Run { loglines, symbols } if loglines.len() == 1 && symbols.is_none()));
         assert_eq!(0x1236, registers.command_pointer);
         assert_eq!(0xc0, registers.accumulator);
+    }
+
+    #[test]
+    fn run_stops_with_terminated_run_on_unsupported_opcode() {
+        let command = RunCommand {
+            stop_condition: BooleanExpression::Value(false),
+            continue_condition: BooleanExpression::Value(true),
+            start_address: Some(RunAddress::Memory(0x1000)),
+        };
+        let mut registers = Registers::new_initialized(0);
+        let mut memory = Memory::new_with_ram();
+        memory.write(0x1000, &[0xcb]).unwrap();
+        let token = command.execute(&mut registers, &mut memory, &mut None).unwrap();
+        match token {
+            OutputToken::TerminatedRun { ref reason, .. } => {
+                assert!(
+                    reason.contains("Unsupported opcode") && reason.contains("0xcb"),
+                    "{reason}"
+                );
+            }
+            _ => panic!("expected TerminatedRun, got {token:?}"),
+        }
+        assert_eq!(registers.command_pointer, 0x1000);
     }
 
     #[test]
