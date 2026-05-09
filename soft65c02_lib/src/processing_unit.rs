@@ -445,13 +445,20 @@ pub fn resolve_opcode(address: usize, opcode: u8, memory: &Memory) -> Result<CPU
             instr::new(address, opcode, "NOP", AM::ZeroPageXIndexed(op1), mc::nop)
         }
         0x5c | 0xdc | 0xfc => instr::new(address, opcode, "NOP", AM::Absolute(op2), mc::nop),
-        _ => panic!(
-            "Yet unsupported instruction opcode 0x{:02x} at address #0x{:04X}.",
-            opcode, address
-        ),
+        _ => {
+            return Err(CPUError::UnsupportedOpcode { address, opcode });
+        }
     };
 
     Ok(instruction)
+}
+
+/// Single-byte placeholder for listing mixed code/data (unknown opcode or embedded `.byte`).
+fn synthetic_data_byte_instruction(address: usize, opcode: u8) -> CPUInstruction {
+    use microcode as mc;
+    use AddressingMode as AM;
+    use CPUInstruction as instr;
+    instr::new(address, opcode, ".byte", AM::Implied, mc::nop)
 }
 
 pub fn execute_step(registers: &mut Registers, memory: &mut Memory) -> Result<LogLine, CPUError> {
@@ -481,7 +488,13 @@ pub fn disassemble(
     let mut output: Vec<CPUInstruction> = vec![];
 
     while cp < end {
-        let cpu_instruction = read_step(cp, memory)?;
+        let cpu_instruction = match read_step(cp, memory) {
+            Ok(i) => i,
+            Err(CPUError::UnsupportedOpcode { address, opcode }) => {
+                synthetic_data_byte_instruction(address, opcode)
+            }
+            Err(e) => return Err(e),
+        };
         cp = cp + 1 + cpu_instruction.addressing_mode.get_operands().len();
         output.push(cpu_instruction);
     }
@@ -507,11 +520,17 @@ impl Iterator for MemoryParserIterator<'_> {
     type Item = CPUInstruction;
 
     fn next(&mut self) -> Option<CPUInstruction> {
-        if let Ok(cpu_instruction) = read_step(self.cp, self.memory) {
-            self.cp = self.cp + 1 + cpu_instruction.addressing_mode.get_operands().len();
-            Some(cpu_instruction)
-        } else {
-            None
+        match read_step(self.cp, self.memory) {
+            Ok(cpu_instruction) => {
+                self.cp = self.cp + 1 + cpu_instruction.addressing_mode.get_operands().len();
+                Some(cpu_instruction)
+            }
+            Err(CPUError::UnsupportedOpcode { address, opcode }) => {
+                let cpu_instruction = synthetic_data_byte_instruction(address, opcode);
+                self.cp += 1;
+                Some(cpu_instruction)
+            }
+            Err(_) => None,
         }
     }
 }
@@ -520,6 +539,8 @@ impl Iterator for MemoryParserIterator<'_> {
 pub enum CPUError {
     MemoryError(MemoryError),
     MicrocodeError(MicrocodeError),
+    /// Opcode not implemented by this emulator (or raw data in a code stream).
+    UnsupportedOpcode { address: usize, opcode: u8 },
 }
 
 impl Error for CPUError {}
@@ -529,6 +550,11 @@ impl fmt::Display for CPUError {
         match self {
             CPUError::MemoryError(e) => write!(f, "CPU Error (memory) {}", e),
             CPUError::MicrocodeError(e) => write!(f, "CPU Error (microcode) {}", e),
+            CPUError::UnsupportedOpcode { address, opcode } => write!(
+                f,
+                "Unsupported opcode 0x{:02x} at address #0x{:04X}",
+                opcode, address
+            ),
         }
     }
 }
@@ -576,5 +602,28 @@ mod tests {
         let cpu_instruction: CPUInstruction = read_step(0x1000, &memory).unwrap();
         assert_eq!(0x1000, cpu_instruction.address);
         assert_eq!("DEX".to_owned(), cpu_instruction.mnemonic);
+    }
+
+    #[test]
+    fn unsupported_opcode_returns_error_on_read_step() {
+        let mut memory = Memory::new_with_ram();
+        memory.write(0x1000, &[0xcb]).unwrap();
+        assert!(matches!(
+            read_step(0x1000, &memory),
+            Err(CPUError::UnsupportedOpcode {
+                address: 0x1000,
+                opcode: 0xcb
+            })
+        ));
+    }
+
+    #[test]
+    fn disassemble_treats_unknown_opcode_as_byte() {
+        let mut memory = Memory::new_with_ram();
+        memory.write(0x1000, &[0xa9, 0x42, 0xcb, 0x60]).unwrap();
+        let list = disassemble(0x1000, 0x1004, &memory).unwrap();
+        assert_eq!(list.len(), 3, "LDA #imm, .byte, RTS");
+        assert_eq!(list[1].mnemonic, ".byte");
+        assert_eq!(list[1].opcode, 0xcb);
     }
 }

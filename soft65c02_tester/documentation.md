@@ -372,6 +372,8 @@ Symbols can be used for the start address.
 
 The soft65c02_tester enhances the base disassembler in the library by adding symbol references, and constructing both branch and standard labels, to help reading the disassembly.
 
+Bytes that are **not** decoded as instructions by the emulator (embedded `.byte` data after a branch, or **unsupported opcodes** such as `$CB` / WAI on this core) are listed as **`(xx) .byte`** on that address only, so mixed code/data regions do not panic the listing.
+
 Where symbols match the disassembly output addresses, they will be output as a comment, with all matching symbols displayed.
 
 Examples:

@@ -468,4 +468,21 @@ end:
         let actual_output = output.join("\n");
         assert_eq!(actual_output, expected_output, "\nExpected:\n{}\n\nActual:\n{}\n", expected_output, actual_output);
     }
+
+    #[test]
+    fn test_disassemble_unknown_opcode_as_byte() {
+        let mut memory = Memory::new_with_ram();
+        memory
+            .write(0x1000, &[0xa9, 0x00, 0xcb, 0x60])
+            .unwrap();
+        let mut symbols = None;
+        let disassembler = Disassembler::new(&memory, &mut symbols);
+        let output = disassembler.disassemble_range(0x1000, 0x1004).unwrap();
+        let joined = output.join("\n");
+        assert!(
+            joined.contains("#0x1002: (cb)"),
+            "expected .byte line for 0xcb, got:\n{joined}"
+        );
+        assert!(joined.contains(".byte"), "{joined}");
+    }
 } 
