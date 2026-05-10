@@ -117,7 +117,7 @@ pub fn tester_help_summary() -> Vec<String> {
         "marker $$description$$".into(),
         "registers flush | registers set <assignments> | registers show [A|X|Y|SP|S|CP|cycle_count]"
             .into(),
-        "memory flush | memory load <atari|apple|#addr> \"file\" | memory load rom #addr \"file\""
+        "memory flush | load … | load rom … | protect ro|rw #addr 0x<len> | write … | fill … | show … | map show"
             .into(),
         "memory write #addr bytes | memory fill #from ~ #to [byte] | memory show … | memory map show"
             .into(),
@@ -381,6 +381,10 @@ pub enum MemoryCommand {
     AddSymbol { name: String, value: u16 },
     RemoveSymbol { name: String },
     Show { address: usize, length: usize, width: Option<usize>, description: Option<String> },
+    /// Snapshot range then mount ROM overlay (see [`Memory::protect_read_only`]).
+    ProtectRo { start: usize, length: usize },
+    /// Drop ROM overlays overlapping range and flatten (see [`Memory::strip_read_only_overlays`]).
+    ProtectRw { start: usize, length: usize },
 }
 
 impl Command for MemoryCommand {
@@ -515,6 +519,38 @@ impl Command for MemoryCommand {
                     vec!["No symbol table available".to_string()]
                 }
             },
+            Self::ProtectRo { start, length } => {
+                if *length == 0 {
+                    return Err(anyhow::anyhow!("protect ro length must be greater than 0"));
+                }
+                let end = start.checked_add(*length).ok_or_else(|| {
+                    anyhow::anyhow!("protect ro range overflow")
+                })?;
+                if end > MEMMAX + 1 {
+                    return Err(anyhow::anyhow!("protect ro range exceeds address space"));
+                }
+                let name = format!("RO_0x{:04X}_0x{:X}", start, length);
+                if let Err(e) = memory.protect_read_only(&name, *start, *length) {
+                    return Ok(OutputToken::ExecutionError {
+                        message: format!("{e}"),
+                    });
+                }
+                vec![format!(
+                    "read-only snapshot mounted as '{name}' (#0x{start:04X} … #0x{:04X}, {} bytes).",
+                    end - 1,
+                    length
+                )]
+            }
+            Self::ProtectRw { start, length } => {
+                if let Err(e) = memory.strip_read_only_overlays(*start, *length) {
+                    return Ok(OutputToken::ExecutionError {
+                        message: format!("{e}"),
+                    });
+                }
+                vec![format!(
+                    "stripped read-only overlays overlapping #0x{start:04X} length 0x{length:X}"
+                )]
+            }
             Self::Show { address, length, width, description } => {
                 let data = match memory.read(*address, *length) {
                     Ok(d) => d,
@@ -1223,6 +1259,30 @@ mod memory_command_tests {
         } else {
             panic!("expected Setup");
         }
+    }
+
+    #[test]
+    fn test_protect_ro_then_strip_rw() {
+        let mut registers = Registers::new_initialized(0);
+        let mut memory = Memory::new_with_ram();
+        memory.write(0x4000, &[0x12]).unwrap();
+
+        let ro = MemoryCommand::ProtectRo {
+            start: 0x4000,
+            length: 1,
+        };
+        let token = ro.execute(&mut registers, &mut memory, &mut None).unwrap();
+        assert!(matches!(token, OutputToken::Setup(ref lines) if lines[0].contains("read-only")));
+
+        assert!(memory.write(0x4000, &[0x99]).is_err());
+
+        let rw = MemoryCommand::ProtectRw {
+            start: 0x4000,
+            length: 1,
+        };
+        rw.execute(&mut registers, &mut memory, &mut None).unwrap();
+        memory.write(0x4000, &[0x99]).unwrap();
+        assert_eq!(memory.read(0x4000, 1).unwrap(), vec![0x99]);
     }
 
     #[test]

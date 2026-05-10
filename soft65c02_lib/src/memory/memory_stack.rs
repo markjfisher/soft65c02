@@ -171,6 +171,49 @@ impl MemoryStack {
         self.add_subsystem(name, start_address, ROM::new(data));
     }
 
+    /// Snapshot the **effective** bytes at `[start, start + len)` and mount them as read-only [`ROM`].
+    /// Writes to that range then fail like `memory load rom` without requiring a file.
+    pub fn protect_read_only(&mut self, name: &str, start: usize, len: usize) -> Result<(), MemoryError> {
+        let data = self.read(start, len)?;
+        self.mount_rom(name, start, data);
+        Ok(())
+    }
+
+    /// Remove read-only overlays that overlap `[start, start + len)` by flattening memory to RAM,
+    /// then remounting every other ROM region unchanged. The flattened image preserves visible bytes.
+    pub fn strip_read_only_overlays(&mut self, start: usize, len: usize) -> Result<(), MemoryError> {
+        let end = start.checked_add(len).ok_or(MemoryError::Other(
+            start,
+            "address range overflow",
+        ))?;
+        if end > super::MEMMAX + 1 {
+            return Err(MemoryError::Other(
+                start,
+                "range extends past end of address space",
+            ));
+        }
+        if len == 0 {
+            return Ok(());
+        }
+        let flat = self.read(0, super::MEMMAX + 1)?;
+        let regions = self.export_regions();
+        let mut m = MemoryStack::new_with_ram();
+        m.write(0, &flat)?;
+        for r in regions {
+            if !r.read_only {
+                continue;
+            }
+            let r_end = r.start_address + r.data.len();
+            let overlaps = !(r_end <= start || r.start_address >= end);
+            if overlaps {
+                continue;
+            }
+            m.mount_rom(&r.name, r.start_address, r.data);
+        }
+        *self = m;
+        Ok(())
+    }
+
     /// Export subsystem layout and contents for session persistence.
     pub fn export_regions(&self) -> Vec<MemoryRegionExport> {
         self.stack
@@ -434,5 +477,34 @@ mod tests {
         let m2 = MemoryStack::restore_from_regions(regions).unwrap();
         assert_eq!(m.read(0x1000, 2).unwrap(), m2.read(0x1000, 2).unwrap());
         assert_eq!(m.read(0xe000, 4).unwrap(), m2.read(0xe000, 4).unwrap());
+    }
+
+    #[test]
+    fn protect_read_only_then_write_fails() {
+        let mut m = MemoryStack::new_with_ram();
+        m.write(0x2000, &[0xde, 0xad]).unwrap();
+        m.protect_read_only("snap", 0x2000, 2).unwrap();
+        assert!(m.write(0x2000, &[0x00]).is_err());
+        assert_eq!(m.read(0x2000, 2).unwrap(), vec![0xde, 0xad]);
+    }
+
+    #[test]
+    fn strip_read_only_restores_writes() {
+        let mut m = MemoryStack::new_with_ram();
+        m.write(0x3000, &[1, 2, 3]).unwrap();
+        m.protect_read_only("snap", 0x3000, 3).unwrap();
+        assert!(m.write(0x3000, &[9]).is_err());
+        m.strip_read_only_overlays(0x3000, 3).unwrap();
+        m.write(0x3000, &[9]).unwrap();
+        assert_eq!(m.read(0x3000, 1).unwrap(), vec![9]);
+    }
+
+    #[test]
+    fn strip_keeps_non_overlapping_rom() {
+        let mut m = MemoryStack::new_with_ram();
+        m.mount_rom("keep", 0xf000, vec![0x55; 16]);
+        m.strip_read_only_overlays(0x1000, 0x100).unwrap();
+        assert_eq!(m.read(0xf000, 2).unwrap(), vec![0x55, 0x55]);
+        assert!(m.write(0xf000, &[0]).is_err());
     }
 }

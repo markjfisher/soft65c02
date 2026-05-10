@@ -476,6 +476,17 @@ impl<'a> MemoryCommandParser<'a> {
             Rule::symbol_remove => self.handle_symbol_remove(pair.into_inner())?,
             Rule::memory_show => self.handle_memory_show(pair.into_inner())?,
             Rule::memory_map_show => MemoryCommand::MapShow,
+            Rule::memory_protect => {
+                let inner = pair
+                    .into_inner()
+                    .next()
+                    .expect("memory_protect wraps ro/rw");
+                match inner.as_rule() {
+                    Rule::memory_protect_ro => self.handle_memory_protect_ro(inner.into_inner())?,
+                    Rule::memory_protect_rw => self.handle_memory_protect_rw(inner.into_inner())?,
+                    r => return Err(anyhow!("Unknown memory_protect variant: {:?}", r)),
+                }
+            }
             _ => return Err(anyhow!("Unknown memory command")),
         };
 
@@ -699,6 +710,33 @@ impl<'a> MemoryCommandParser<'a> {
         };
 
         Ok(MemoryCommand::Fill { start, end, value })
+    }
+
+    fn handle_memory_protect_ro(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+        let addr_pair = pairs
+            .next()
+            .expect("memory protect ro expects start address");
+        let start = self.context.parse_memory(&addr_pair)?;
+        let length_node = pairs.next().expect("memory protect ro expects hex_length");
+        let length_str = &length_node.as_str()[2..];
+        let length = usize::from_str_radix(length_str, 16)
+            .map_err(|e| anyhow::anyhow!("Invalid hex length {}: {}", length_str, e))?;
+        if length == 0 {
+            return Err(anyhow::anyhow!("Length must be greater than 0"));
+        }
+        Ok(MemoryCommand::ProtectRo { start, length })
+    }
+
+    fn handle_memory_protect_rw(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+        let addr_pair = pairs
+            .next()
+            .expect("memory protect rw expects start address");
+        let start = self.context.parse_memory(&addr_pair)?;
+        let length_node = pairs.next().expect("memory protect rw expects hex_length");
+        let length_str = &length_node.as_str()[2..];
+        let length = usize::from_str_radix(length_str, 16)
+            .map_err(|e| anyhow::anyhow!("Invalid hex length {}: {}", length_str, e))?;
+        Ok(MemoryCommand::ProtectRw { start, length })
     }
 
     fn handle_memory_show(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
@@ -3596,6 +3634,32 @@ mod cli_command_parser_test {
     fn test_memory_map_show_cli_parser() {
         let cli_command = CliCommandParser::from("memory map show").unwrap();
         assert!(matches!(cli_command, CliCommand::Memory(MemoryCommand::MapShow)));
+    }
+
+    #[test]
+    fn test_memory_protect_ro_cli_parser() {
+        let cli_command =
+            CliCommandParser::from("memory protect ro #0x1BFE 0x0208").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Memory(MemoryCommand::ProtectRo {
+                start,
+                length
+            }) if start == 0x1BFE && length == 0x208
+        ));
+    }
+
+    #[test]
+    fn test_memory_protect_rw_cli_parser() {
+        let cli_command =
+            CliCommandParser::from("memory protect rw #0xC000 0x4000").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Memory(MemoryCommand::ProtectRw {
+                start,
+                length
+            }) if start == 0xC000 && length == 0x4000
+        ));
     }
 
     #[test]

@@ -36,6 +36,13 @@ memory load rom #0xE000 "bios.bin"     // Mount file as ROM — reads use ROM, w
 ```
 Use after `memory load`/writes for mutable RAM. ROM must fit in 16-bit space (`addr` + file size ≤ `#0x10000`).
 
+### Memory protect (RO/RW without a file)
+```
+memory protect ro #0x2000 0x0400       // Snapshot visible bytes in range → read-only overlay (same as ROM semantics)
+memory protect rw #0x2000 0x0400       // Drop RO overlays overlapping range; other ROMs unchanged (flatten + rebuild)
+```
+Length is hex (`0x…`) like `disassemble`. Use **`ro`** after content is in RAM; **`rw`** to unlock for writes again.
+
 ### Memory Map Show
 ```
 memory map show                         // Subsystems (RAM, ROM_#0x…) and address ranges

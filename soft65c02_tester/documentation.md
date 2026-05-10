@@ -111,6 +111,26 @@ Use `memory map show` to inspect the subsystem list.
 
 Images are rejected if `#0x{addr} + file_len` spans past `#0xFFFF`.
 
+#### memory protect ro
+
+```
+memory protect ro #0x2000 0x0400
+```
+
+Snapshot the **current visible bytes** in `[addr, addr + length)` and mount them as a **read-only ROM overlay** named `RO_0x....` (same write semantics as `memory load rom`). Use this when content is already in RAM (e.g. a harness binary loaded from cc65) but you need vectors or fixed regions to reject writes without supplying a separate ROM file.
+
+Length uses the same **`0x....` hex form** as `disassemble` length.
+
+#### memory protect rw
+
+```
+memory protect rw #0x1BFE 0x0208
+```
+
+Flattens emulated memory into RAM, **drops every read-only subsystem whose address range overlaps** `[addr, addr + length)`, then **remounts** all other ROM regions unchanged. Writes become allowed again for addresses that were only blocked by those overlays. Does **not** clear bytes: visibility is preserved via a full linear snapshot before rebuild.
+
+Use `memory map show` after changes to confirm subsystem order.
+
 #### memory map show
 
 ```
