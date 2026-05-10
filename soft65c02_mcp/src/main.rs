@@ -267,6 +267,7 @@ fn format_token(t: &OutputToken) -> String {
         OutputToken::Setup(lines) => lines.join("\n"),
         OutputToken::View(lines) => lines.join("\n"),
         OutputToken::Help(lines) => lines.join("\n"),
+        OutputToken::SymbolDump(lines) => lines.join("\n"),
         OutputToken::Assertion { failure, description } => {
             if let Some(msg) = failure {
                 format!("ASSERT FAIL {description}: {msg}")

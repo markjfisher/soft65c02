@@ -118,7 +118,13 @@ registers show cycle_count              // Show cycle count only
 
 ### Symbol Load
 ```
-symbols load "symbols.txt"              // Load VICE format symbols
+symbols load "symbols.txt"              // VICE format; merges into existing table (same name → last wins)
+```
+
+### Symbol Dump / Grep
+```
+symbols dump                            // All symbols ($addr  name); always printed
+symbols grep "fujinet.*"                // Rust regex on names; `(no matches)` if empty
 ```
 
 ### Symbol Add

@@ -146,7 +146,11 @@ where
                 // Successfully parsed a command, update symbols if needed
                 match &cmd {
                     CliCommand::Memory(crate::commands::MemoryCommand::LoadSymbols { symbols }) => {
-                        self.symbols = Some(symbols.clone());
+                        if let Some(existing) = &mut self.symbols {
+                            existing.merge_from(symbols);
+                        } else {
+                            self.symbols = Some(symbols.clone());
+                        }
                     }
                     CliCommand::Memory(crate::commands::MemoryCommand::AddSymbol { name, value }) => {
                         if let Some(symtable) = &mut self.symbols {

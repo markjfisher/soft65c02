@@ -472,6 +472,8 @@ impl<'a> MemoryCommandParser<'a> {
             }
             Rule::memory_fill => self.handle_memory_fill(pair.into_inner())?,
             Rule::symbol_load => self.handle_symbol_load(pair.into_inner())?,
+            Rule::symbol_dump => MemoryCommand::DumpSymbols,
+            Rule::symbol_grep => self.handle_symbol_grep(pair.into_inner())?,
             Rule::symbol_add => self.handle_symbol_add(pair.into_inner())?,
             Rule::symbol_remove => self.handle_symbol_remove(pair.into_inner())?,
             Rule::memory_show => self.handle_memory_show(pair.into_inner())?,
@@ -627,6 +629,18 @@ impl<'a> MemoryCommandParser<'a> {
         };
 
         Ok(command)
+    }
+
+    fn handle_symbol_grep(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
+        let lit = pairs
+            .next()
+            .expect("symbol_grep expects string_literal");
+        let s = lit.as_str();
+        let inner = &s[1..s.len() - 1];
+        let bytes = self.context.parse_string_literal(inner);
+        let pattern = String::from_utf8(bytes)
+            .map_err(|e| anyhow::anyhow!("symbols grep pattern is not valid UTF-8: {e}"))?;
+        Ok(MemoryCommand::GrepSymbols { pattern })
     }
 
     fn handle_symbol_load(&self, mut pairs: Pairs<'_, Rule>) -> AppResult<MemoryCommand> {
@@ -3687,6 +3701,25 @@ mod cli_command_parser_test {
                 address,
                 bytes
             }) if address == 0x1234 && bytes == vec![0x12]
+        ));
+    }
+
+    #[test]
+    fn test_symbols_dump_cli_parser() {
+        let cli_command = CliCommandParser::from("symbols dump").unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Memory(MemoryCommand::DumpSymbols)
+        ));
+    }
+
+    #[test]
+    fn test_symbols_grep_cli_parser() {
+        let cli_command = CliCommandParser::from(r#"symbols grep "fujinet.*""#).unwrap();
+        assert!(matches!(
+            cli_command,
+            CliCommand::Memory(MemoryCommand::GrepSymbols { pattern })
+                if pattern == "fujinet.*"
         ));
     }
 

@@ -43,6 +43,8 @@ pub enum OutputToken {
     View(Vec<String>),
     /// Built-in command summary; always printed (not gated on `-v`).
     Help(Vec<String>),
+    /// Symbol dump / grep; always printed (like [`Self::Help`]).
+    SymbolDump(Vec<String>),
     ControlAction {
         function: ControllableFunction,
         enabled: bool,
@@ -121,7 +123,7 @@ pub fn tester_help_summary() -> Vec<String> {
             .into(),
         "memory write #addr bytes | memory fill #from ~ #to [byte] | memory show … | memory map show"
             .into(),
-        "symbols load \"file\" | symbols add name = value | symbols remove name".into(),
+        "symbols load|dump|grep \"regex\"|add|remove …".into(),
         "run [init|#addr] [until|while <condition>]".into(),
         "assert <condition> $$description$$  (AND OR NOT; comparators = != < > etc.)".into(),
         "disassemble #addr 0x<hex_length>".into(),
@@ -378,6 +380,8 @@ pub enum MemoryCommand {
     Fill { start: usize, end: usize, value: u8 },
     LoadSegments { segments: Vec<MemorySegment> },
     LoadSymbols { symbols: SymbolTable },
+    DumpSymbols,
+    GrepSymbols { pattern: String },
     AddSymbol { name: String, value: u16 },
     RemoveSymbol { name: String },
     Show { address: usize, length: usize, width: Option<usize>, description: Option<String> },
@@ -494,8 +498,50 @@ impl Command for MemoryCommand {
             }
             Self::LoadSymbols { symbols: new_symbols } => {
                 let count = new_symbols.len();
-                *symbols = Some(new_symbols.clone());
-                vec![format!("{} symbols loaded", count)]
+                match symbols {
+                    None => {
+                        *symbols = Some(new_symbols.clone());
+                        vec![format!("{count} symbols loaded")]
+                    }
+                    Some(t) => {
+                        t.merge_from(&new_symbols);
+                        vec![format!(
+                            "merged {count} symbols from file ({} names in table)",
+                            t.len()
+                        )]
+                    }
+                }
+            }
+            Self::DumpSymbols => {
+                let lines = match symbols {
+                    Some(t) => t.dump_lines(),
+                    None => vec!["(no symbol table)".to_string()],
+                };
+                return Ok(OutputToken::SymbolDump(lines));
+            }
+            Self::GrepSymbols { pattern } => {
+                let lines = match symbols {
+                    None => {
+                        return Ok(OutputToken::ExecutionError {
+                            message: "No symbol table loaded".into(),
+                        });
+                    }
+                    Some(t) => match t.grep_lines(pattern) {
+                        Ok(v) => {
+                            if v.is_empty() {
+                                vec!["(no matches)".to_string()]
+                            } else {
+                                v
+                            }
+                        }
+                        Err(e) => {
+                            return Ok(OutputToken::ExecutionError {
+                                message: format!("invalid symbols grep pattern: {e}"),
+                            });
+                        }
+                    },
+                };
+                return Ok(OutputToken::SymbolDump(lines));
             }
             Self::AddSymbol { name, value } => {
                 // Initialize symbol table if it doesn't exist
@@ -1223,6 +1269,71 @@ mod memory_command_tests {
             err,
             MemoryError::Other(0, "trying to write in a read-only memory")
         );
+    }
+
+    #[test]
+    fn test_symbols_load_merges_second_file() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir.path().join("a.lbl");
+        let path_b = dir.path().join("b.lbl");
+        writeln!(File::create(&path_a).unwrap(), "al 001000 .aa").unwrap();
+        writeln!(File::create(&path_b).unwrap(), "al 002000 .bb").unwrap();
+
+        let mut t_a = SymbolTable::new();
+        t_a.load_vice_labels(&path_a).unwrap();
+        let mut t_b = SymbolTable::new();
+        t_b.load_vice_labels(&path_b).unwrap();
+
+        let mut sym: Option<SymbolTable> = None;
+        let mut registers = Registers::new_initialized(0);
+        let mut memory = Memory::new_with_ram();
+
+        MemoryCommand::LoadSymbols { symbols: t_a }
+            .execute(&mut registers, &mut memory, &mut sym)
+            .unwrap();
+        MemoryCommand::LoadSymbols { symbols: t_b }
+            .execute(&mut registers, &mut memory, &mut sym)
+            .unwrap();
+
+        let table = sym.as_ref().unwrap();
+        assert_eq!(table.get_address("aa"), Some(0x1000));
+        assert_eq!(table.get_address("bb"), Some(0x2000));
+    }
+
+    #[test]
+    fn test_symbols_dump_and_grep_tokens() {
+        let mut sym = Some(SymbolTable::new());
+        sym.as_mut().unwrap().add_symbol(0x1111, "fuji_x".into());
+        sym.as_mut().unwrap().add_symbol(0x2222, "other".into());
+
+        let mut registers = Registers::new_initialized(0);
+        let mut memory = Memory::new_with_ram();
+
+        let t = MemoryCommand::DumpSymbols
+            .execute(&mut registers, &mut memory, &mut sym)
+            .unwrap();
+        match t {
+            OutputToken::SymbolDump(lines) => {
+                assert!(lines.iter().any(|l| l.contains("fuji_x")));
+                assert!(lines.iter().any(|l| l.contains("other")));
+            }
+            _ => panic!("expected SymbolDump"),
+        }
+
+        let t2 = MemoryCommand::GrepSymbols {
+            pattern: r"fuji.*".into(),
+        }
+        .execute(&mut registers, &mut memory, &mut sym)
+        .unwrap();
+        match t2 {
+            OutputToken::SymbolDump(lines) => {
+                assert_eq!(lines.len(), 1);
+                assert!(lines[0].contains("fuji_x"));
+            }
+            _ => panic!("expected SymbolDump from grep"),
+        }
     }
 
     #[test]

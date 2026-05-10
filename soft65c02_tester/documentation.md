@@ -324,7 +324,29 @@ This can be loaded with:
 symbols load "tests/symbols.txt"
 ```
 
+If a symbol table already exists, **`symbols load` merges** the file into it (same name → last loaded address wins via `symbols add` rules). The first load creates the table.
+
 Symbols can then be used in place of memory addresses.
+
+#### symbols dump
+
+Print every known symbol (sorted by name) to stdout **without** `-v`:
+
+```
+symbols dump
+```
+
+Each line is `$hhhh  name`. Empty table: `(no symbols)`; no table yet: `(no symbol table)`.
+
+#### symbols grep
+
+List symbols whose **name** matches a [Rust regex](https://docs.rs/regex/latest/regex/#syntax) (UTF-8 pattern in a normal string literal, including escapes):
+
+```
+symbols grep "fujinet.*"
+```
+
+Output format matches `symbols dump`. No matches: `(no matches)`. Invalid regex: command error line. Requires an existing symbol table.
 
 With the above definitions loaded, the following are equivalent:
 

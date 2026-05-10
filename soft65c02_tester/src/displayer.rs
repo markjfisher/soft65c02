@@ -317,6 +317,11 @@ where
                         self.output.write_all(format!("{line}\n").as_bytes())?;
                     }
                 }
+                OutputToken::SymbolDump(lines) => {
+                    for line in lines {
+                        self.output.write_all(format!("{line}\n").as_bytes())?;
+                    }
+                }
                 OutputToken::ParseError { message } => {
                     self.output.write_all(
                         format!("⚠️ Parse error (line skipped):\n{message}\n").as_bytes(),

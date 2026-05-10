@@ -3,6 +3,8 @@ use std::fs::File;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
+use regex::Regex;
+
 #[derive(Debug, Default, Clone)]
 pub struct SymbolTable {
     // Map from address to list of symbols at that address
@@ -57,6 +59,47 @@ impl SymbolTable {
         } else {
             None
         }
+    }
+
+    /// Add every name from `other` into this table (same rules as [`add_symbol`]; duplicate names update address).
+    pub fn merge_from(&mut self, other: &SymbolTable) {
+        for (name, &addr) in &other.addresses {
+            self.add_symbol(addr, name.clone());
+        }
+    }
+
+    /// Sorted `name → address` lines for `symbols dump` / `symbols grep`.
+    pub fn dump_lines(&self) -> Vec<String> {
+        let mut pairs: Vec<(&String, u16)> = self
+            .addresses
+            .iter()
+            .map(|(n, &a)| (n, a))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        if pairs.is_empty() {
+            vec!["(no symbols)".to_string()]
+        } else {
+            pairs
+                .into_iter()
+                .map(|(n, a)| format!("${:04X}  {}", a, n))
+                .collect()
+        }
+    }
+
+    /// Names matching the Rust regex `pattern`, sorted by name.
+    pub fn grep_lines(&self, pattern: &str) -> Result<Vec<String>, String> {
+        let re = Regex::new(pattern).map_err(|e| e.to_string())?;
+        let mut pairs: Vec<(&String, u16)> = self
+            .addresses
+            .iter()
+            .filter(|(name, _)| re.is_match(name))
+            .map(|(n, &a)| (n, a))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(b.0));
+        Ok(pairs
+            .into_iter()
+            .map(|(n, a)| format!("${:04X}  {}", a, n))
+            .collect())
     }
 
     pub fn add_symbol(&mut self, addr: u16, name: String) {
@@ -186,6 +229,30 @@ mod tests {
         assert!(symbols_at_803.contains(&"entry".to_string()));
 
         Ok(())
+    }
+
+    #[test]
+    fn merge_from_combines_tables() {
+        let mut a = SymbolTable::new();
+        a.add_symbol(0x1000, "one".into());
+        let mut b = SymbolTable::new();
+        b.add_symbol(0x2000, "two".into());
+        a.merge_from(&b);
+        assert_eq!(a.get_address("one"), Some(0x1000));
+        assert_eq!(a.get_address("two"), Some(0x2000));
+        assert_eq!(a.len(), 2);
+    }
+
+    #[test]
+    fn grep_lines_regex() {
+        let mut t = SymbolTable::new();
+        t.add_symbol(0x1111, "fujinet1".into());
+        t.add_symbol(0x2222, "fujinet_foo".into());
+        t.add_symbol(0x3333, "other".into());
+        let lines = t.grep_lines(r"fujinet.*").unwrap();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("fujinet1"));
+        assert!(lines[1].contains("fujinet_foo"));
     }
 
     #[test]
